@@ -11,7 +11,7 @@ from mcp.types import ToolAnnotations
 from . import accounts as acct
 from . import imap
 
-mcp = MCPServer("imap-mcp", version="0.1.0")
+mcp = MCPServer("imap-mcp", version="0.2.0")
 
 
 def _parse_since(since: str | None) -> dt.date | None:
@@ -175,4 +175,6 @@ def create_draft(
 
 
 def main() -> None:
-    mcp.run()
+    from .cli import main as run_cli
+
+    run_cli()

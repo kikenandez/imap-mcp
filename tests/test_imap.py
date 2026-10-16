@@ -188,6 +188,7 @@ def test_fetch_one_full_message(config, monkeypatch):
         "body": "line one\nline two",
     }
     assert FakeMailBox.instances[-1].fetch_kwargs["mark_seen"] is False
+    assert FakeMailBox.instances[-1].fetch_kwargs["limit"] == 1
 
 
 def test_fetch_one_not_found(config, monkeypatch):
@@ -242,7 +243,7 @@ def test_header_fetch_limit(config, monkeypatch):
         imap.fetch_rows(accounts.get_account("alpha"), limit=0)
 
 
-@pytest.mark.parametrize("query", ["café", "invoice", "東京"])
+@pytest.mark.parametrize("query", ["café", "cafe\u0301"])
 def test_search_charset_fallback(config, monkeypatch, query):
     import imaplib
 
@@ -256,15 +257,51 @@ def test_search_charset_fallback(config, monkeypatch, query):
         yield fake_msg()
 
     monkeypatch.setattr(FakeMailBox, "fetch", fetch)
-    if query == "東京":
-        with pytest.raises(ValueError, match="no ASCII equivalent"):
-            imap.fetch_rows(accounts.get_account("alpha"), query=query)
-        assert len(calls) == 1
-    else:
-        assert imap.fetch_rows(accounts.get_account("alpha"), query=query)
-        assert len(calls) == 2
-        assert calls[1][1]["charset"] == "US-ASCII"
-        assert ("cafe" if query == "café" else query) in calls[1][0]
+    assert imap.fetch_rows(accounts.get_account("alpha"), query=query)
+    assert len(calls) == 2
+    assert calls[1][1]["charset"] == "US-ASCII"
+    assert "cafe" in calls[1][0]
+
+
+@pytest.mark.parametrize(
+    "query", [None, "", "invoice", "東京", "café 東京", "café ☕", "１２", "\u0301"]
+)
+@pytest.mark.parametrize("error_type", ["imaplib", "imap_tools"])
+def test_search_preserves_error_without_accent_only_fallback(
+    config, monkeypatch, query, error_type
+):
+    import imaplib
+
+    from imap_tools.errors import MailboxUidsError
+
+    monkeypatch.setenv("ALPHA_PW", "test-password")
+    error = (
+        imaplib.IMAP4.error("original failure")
+        if error_type == "imaplib"
+        else MailboxUidsError(("NO", [b"original failure"]), "OK")
+    )
+    calls = []
+
+    def fetch(self, criteria, **kwargs):
+        calls.append(kwargs)
+        raise error
+        yield  # Exercise the lazy generator error path.
+
+    monkeypatch.setattr(FakeMailBox, "fetch", fetch)
+    with pytest.raises(type(error)) as caught:
+        imap.fetch_rows(accounts.get_account("alpha"), query=query)
+    assert caught.value is error
+    assert len(calls) == 1
+    assert calls[0]["charset"] == "UTF-8"
+
+
+@pytest.mark.parametrize(
+    "uid", ["1:*", "*", "1,2", "1:2", "", "abc", "-1", "0", " 1", "1\n", "١", "１２", None, 42]
+)
+def test_fetch_one_rejects_invalid_uid_before_connecting(config, uid):
+    with pytest.raises(ValueError, match="positive numeric IMAP UID"):
+        imap.fetch_one(accounts.get_account("alpha"), uid)
+    assert not FakeMailBox.instances
 
 
 def test_html_body_strips_hidden_content_and_decodes_entities():

@@ -1,6 +1,6 @@
 [project]
 name = "imap-mcp"
-version = "0.1.0"
+version = "0.2.0"
 description = "MCP server for reading mail across IMAP accounts and creating opt-in drafts"
 readme = "README.md"
 license = "MIT"
@@ -19,7 +19,7 @@ classifiers = [
 ]
 dependencies = [
     "imap-tools>=1.13.0",
-    "mcp[cli]>=1.28.1",
+    "mcp[cli]>=2.0.0",
 ]
 
 [project.urls]

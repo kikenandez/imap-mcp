@@ -68,11 +68,23 @@ to keep the config outside the repo.
 | Gmail / Google Workspace | `imap.gmail.com` | [App password](https://myaccount.google.com/apppasswords) (requires 2FA; the spaces Google shows are stripped automatically) |
 | Fastmail | `imap.fastmail.com` | [App password](https://www.fastmail.help/hc/en-us/articles/360058752854) |
 | iCloud | `imap.mail.me.com` | [App-specific password](https://support.apple.com/102654) |
-| Yahoo | `imap.mail.yahoo.com` | [App password](https://help.yahoo.com/kb/SLN15241.html) |
+| AOL | `imap.aol.com:993` | [App password](https://help.aol.com/articles/create-and-manage-app-password); see [AOL settings](https://help.aol.com/articles/how-do-i-use-other-email-applications-to-send-and-receive-my-aol-mail) |
+| Yahoo | `imap.mail.yahoo.com:993` | [App password and settings](https://help.yahoo.com/kb/SLN4075.html); Drafts may be named `Draft` (unverified on live accounts) |
+| OVH MX Plan | Host shown in OVH Manager, often `ssl0.ovh.net:993` in Europe | Mailbox password; some installations may use an `INBOX.` hierarchy (unverified); inspect with `doctor` |
+| OVH Zimbra | Host shown in OVH Manager, port `993` | Follow the account's [OVH Zimbra configuration](https://docs.ovhcloud.com/en/guides/web-cloud/email-and-collaborative-solutions/zimbra/landing-page-zimbra); mailbox password |
 | Migadu | `imap.migadu.com` | Mailbox password |
 | Outlook.com / Microsoft 365 | not supported | Microsoft has retired IMAP basic auth; OAuth is not implemented here |
 
-All standard providers use port 993 (implicit TLS), the default.
+Port 993 (implicit TLS) is the default. Use the exact host from your provider's
+account settings. OVH hostnames vary by infrastructure and region; its
+[MX Plan configuration guide](https://help.ovhcloud.com/csm/pl-mx-plan-thunderbird-macos-configuration?id=kb_article_view&sysparm_article=KB0052133)
+lists `ssl0.ovh.net` / `imap.mail.ovh.net` for Europe and `imap.mail.ovh.ca`
+for America/Asia-Pacific.
+
+These are configuration references, not a claim of tested provider support.
+No live AOL, Yahoo, OVH MX Plan or OVH Zimbra account has been tested for this
+release. Folder names, SPECIAL-USE flags and native UTF-8 support remain
+unverified per provider. Use `doctor` to inspect your own account.
 
 ### Passwords
 
@@ -144,7 +156,9 @@ Both return compact rows:
 ```
 
 **`get_email(account, id, folder?)`** one full message by the `id` from a row, with
-plain-text body preferred over HTML. Reading it does not mark it read.
+plain-text body preferred over HTML. The UID must be a positive ASCII decimal
+number; ranges, lists and wildcards are rejected before connecting. At most one
+message is fetched. Reading it does not mark it read.
 
 Dates are ISO (`YYYY-MM-DD`); `since` filters everywhere; `limit` applies per
 account when merging. If one account is down, its error comes back as a row
@@ -164,7 +178,9 @@ and the other accounts still answer.
 ## Development
 
 ```sh
-uv run pytest
+uv run --locked pytest
+uv run --locked ruff check .
+uv run --locked ruff format --check .
 ```
 
 Tests use no network: the IMAP layer is faked. The suite locks in the
@@ -182,9 +198,10 @@ time out after 30 seconds by default; this is not a whole-request deadline.
 List/search fetch only headers, in batches of 50, with a maximum of 100 rows per
 account. Snippets may be empty; use `get_email` for the body. HTML-only messages
 are converted to plain text. Cross-account dates are ordered in UTC.
-Search uses UTF-8, retrying with an ASCII-folded query if the server rejects it;
-this fallback can lose accent distinctions. Queries without an ASCII equivalent
-return an account error rather than an unfiltered search.
+Search uses UTF-8. After a search error, it retries in ASCII only when removing
+accents produces a nonempty, entirely ASCII query. This fallback can lose accent
+distinctions. Empty queries, ASCII-only queries and other Unicode queries
+preserve the original error without retrying.
 
 ### Folders
 
@@ -247,3 +264,40 @@ before retrying. The server does not retry APPEND automatically.
 treat their contents as data, not instructions or permission to create drafts.
 The server never sends mail. A human reviews recipients and content in their
 mail client before sending.
+
+### Diagnose an account
+
+```sh
+uv run --locked imap-mcp doctor              # all accounts; disabled accounts are skipped
+uv run --locked imap-mcp doctor personal     # one account, read-only
+uv run --locked imap-mcp doctor personal --test-draft
+```
+
+The command prints JSON containing login status, folders and resolved roles,
+the actual negotiated TLS version, cipher name and secret bits from the connected
+socket, socket timeout, and a UTF-8 search for `café`. The `tls` field is null
+when connection details are unavailable (including login failures and disabled
+accounts). It fetches
+at most one message's headers and prints no message content. The diagnostic
+search deliberately does not use ASCII fallback, so rejection identifies a
+server limitation even if the normal read tools work with folded queries.
+It exits 0 when checks succeed (or accounts are disabled), 1 on a check/config
+error, and 2 on invalid command-line arguments.
+
+`--test-draft` requires a named account with `allow_drafts = true`. After the
+read checks succeed, it creates exactly one draft titled `imap-mcp test draft`,
+addressed to the account itself, and prints its folder and UID (possibly null).
+It never sends or removes the draft. Review it, and remove it manually if desired.
+Repeated invocations create additional drafts. Running without this flag never
+writes to a mailbox.
+
+For manual provider validation, run the read-only command first, inspect folder
+roles and UTF-8 results, then use an opted-in account for the explicit draft
+check. Verify the draft in your mail client and check that existing messages'
+unread states are unchanged. No credentials are needed for the automated tests.
+
+### Roadmap
+
+This version implements fork-plan phases 0–3. Phase 4 (Microsoft 365 device-code
+OAuth, token caching and `imap-mcp auth`) is deferred as specified in the plan.
+Password-based Outlook/Microsoft 365 authentication is not supported.

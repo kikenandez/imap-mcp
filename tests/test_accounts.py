@@ -87,3 +87,22 @@ def test_invalid_folder_config(config, folders):
 
     with pytest.raises(ValueError, match="folders"):
         replace(accounts.get_account("alpha"), folders=folders)
+
+
+def test_draft_config_defaults_and_opt_in(config):
+    config.write_text(
+        config.read_text().replace(
+            "port = 1993", 'port = 1993\nallow_drafts = true\nfrom_name = "Élodie"'
+        )
+    )
+    assert accounts.get_account("alpha").allow_drafts is True
+    assert accounts.get_account("alpha").from_name == "Élodie"
+    assert accounts.get_account("gmailish").allow_drafts is False
+    assert accounts.get_account("gmailish").from_name is None
+
+
+@pytest.mark.parametrize("value", ['"false"', '"true"', "1"])
+def test_draft_opt_in_requires_boolean(config, value):
+    config.write_text(config.read_text() + f"\nallow_drafts = {value}\n")
+    with pytest.raises(ValueError, match="TOML booleans"):
+        accounts.all_accounts()

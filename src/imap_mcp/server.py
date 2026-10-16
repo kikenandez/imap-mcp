@@ -1,5 +1,4 @@
-"""Unified read-only email MCP server. Reads across all configured IMAP
-mailboxes and exposes list/get/search tools to an MCP client."""
+"""Multi-account email MCP server with read tools and opt-in draft creation."""
 
 from __future__ import annotations
 
@@ -37,7 +36,13 @@ def list_accounts() -> list[dict]:
     """
 
     def status(a):
-        entry = {"account": a.key, "label": a.label, "email": a.email, "enabled": a.enabled}
+        entry = {
+            "account": a.key,
+            "label": a.label,
+            "email": a.email,
+            "enabled": a.enabled,
+            "allow_drafts": a.allow_drafts,
+        }
         if not a.enabled:
             entry["status"] = "disabled"
         elif not a.password():
@@ -132,6 +137,41 @@ def get_email(account: str, id: str, folder: str | None = None) -> dict:
 def list_folders(account: str) -> list[dict]:
     """List folder names, hierarchy delimiters, flags and resolved roles for an account."""
     return imap.list_folders(acct.get_account(account))
+
+
+@mcp.tool(
+    annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False)
+)
+def create_draft(
+    account: str,
+    to: str | list[str],
+    subject: str,
+    body: str,
+    cc: str | list[str] | None = None,
+    html_body: str | None = None,
+    reply_to_uid: str | None = None,
+    reply_folder: str | None = None,
+    reply_all: bool = False,
+) -> dict:
+    """Create a draft only on accounts with allow_drafts=true; never sends mail.
+
+    Writes only to the resolved Drafts folder. The human reviews it in their mail
+    client. For replies pass reply_to_uid and its reply_folder (default INBOX).
+    Empty to derives recipients; empty subject uses the original subject.
+    reply_all adds original To/Cc recipients excluding your own email address.
+    Each call creates a new draft; do not automatically retry uncertain failures.
+    """
+    return imap.create_draft(
+        acct.get_account(account),
+        to,
+        subject,
+        body,
+        cc=cc,
+        html_body=html_body,
+        reply_to_uid=reply_to_uid,
+        reply_folder=reply_folder,
+        reply_all=reply_all,
+    )
 
 
 def main() -> None:

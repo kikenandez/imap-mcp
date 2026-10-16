@@ -1,4 +1,4 @@
-"""Read-only IMAP helpers built on imap-tools.
+"""Read-only IMAP access and opt-in draft APPEND, built on imap-tools.
 
 Every fetch uses mark_seen=False, so imap-tools issues BODY.PEEK and reading a
 message never sets the \\Seen flag in the real mailbox.
@@ -12,12 +12,14 @@ import ssl
 import unicodedata
 from collections.abc import Iterator
 from contextlib import contextmanager, suppress
+from email import policy
 from html.parser import HTMLParser
 
-from imap_tools import AND, OR, MailBox
+from imap_tools import AND, OR, MailBox, MailMessageFlags
 from imap_tools.errors import MailboxUidsError
 
 from .accounts import Account
+from .drafts import append_uid, build_draft
 from .folders import folder_rows, resolve_folder
 
 
@@ -173,3 +175,68 @@ def fetch_one(account: Account, uid: str, folder: str | None = None) -> dict | N
 def list_folders(account: Account) -> list[dict]:
     with open_box(account) as box:
         return folder_rows(box, account)
+
+
+def create_draft(
+    account: Account,
+    to: str | list[str],
+    subject: str,
+    body: str,
+    cc: str | list[str] | None = None,
+    html_body: str | None = None,
+    reply_to_uid: str | None = None,
+    reply_folder: str | None = None,
+    reply_all: bool = False,
+) -> dict:
+    """APPEND a draft only when opted in. Never send or alter existing messages."""
+    if not account.allow_drafts:
+        raise PermissionError(
+            f"draft creation is disabled for {account.key}; set allow_drafts = true"
+        )
+    if (reply_folder is not None or reply_all) and not reply_to_uid:
+        raise ValueError("reply_folder and reply_all require reply_to_uid")
+    with open_box(account) as box:
+        folder = resolve_folder(box, account, "drafts")
+        original = None
+        original_text = ""
+        if reply_to_uid:
+            if not reply_to_uid.isdecimal() or int(reply_to_uid) < 1:
+                raise ValueError("reply_to_uid must be a positive IMAP UID")
+            source_folder = resolve_folder(box, account, reply_folder)
+            box.folder.set(source_folder, readonly=True)
+            original = next(
+                box.fetch(
+                    AND(uid=reply_to_uid), headers_only=True, mark_seen=False, limit=1, bulk=False
+                ),
+                None,
+            )
+            if original is None:
+                raise ValueError(f"message {reply_to_uid} not found in {source_folder}")
+            # Headers alone cannot supply the quoted body. Read it with BODY.PEEK.
+            full = next(
+                box.fetch(
+                    AND(uid=reply_to_uid), headers_only=False, mark_seen=False, limit=1, bulk=False
+                ),
+                None,
+            )
+            if full is None:
+                raise ValueError(f"message {reply_to_uid} disappeared from {source_folder}")
+            original_text = body_text(full)
+            box.folder.set("INBOX", readonly=True)
+        message, recipients, copies = build_draft(
+            account, to, subject, body, cc, html_body, original, original_text, reply_all
+        )
+        result = box.append(
+            message.as_bytes(policy=policy.SMTP),
+            folder,
+            flag_set=[MailMessageFlags.DRAFT, MailMessageFlags.SEEN],
+        )
+        return {
+            "account": account.key,
+            "folder": folder,
+            "uid": append_uid(result),
+            "message_id": str(message["Message-ID"]),
+            "subject": str(message["Subject"]),
+            "to": recipients,
+            "cc": copies,
+        }

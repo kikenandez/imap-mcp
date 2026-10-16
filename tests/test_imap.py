@@ -27,6 +27,8 @@ class FakeMailBox:
         self.login_args = None
         self.fetch_kwargs = None
         self.logged_out = False
+        self.append_calls = []
+        self.fetch_calls = []
         FakeMailBox.instances.append(self)
 
     def set_folder(self, name, readonly=False):
@@ -37,9 +39,14 @@ class FakeMailBox:
         return self
 
     def fetch(self, criteria, **kwargs):
+        self.fetch_calls.append((criteria, kwargs))
         self.fetch_criteria = criteria
         self.fetch_kwargs = kwargs
         return iter(FakeMailBox.messages)
+
+    def append(self, message, folder, flag_set):
+        self.append_calls.append((message, folder, flag_set))
+        return ("OK", [b"[APPENDUID 123 456] appended"])
 
     def logout(self):
         self.logged_out = True
@@ -283,3 +290,212 @@ def test_folder_reads_use_examine_and_return_folder(config, monkeypatch):
     assert imap.list_folders(account) == [
         {"name": "INBOX.Drafts", "delimiter": ".", "flags": [], "role": "drafts"}
     ]
+
+
+@pytest.fixture
+def draft_account(config, monkeypatch):
+    from dataclasses import replace
+
+    monkeypatch.setenv("ALPHA_PW", "test-password")
+    FakeMailBox.folders = [SimpleNamespace(name="Drafts", delim="/", flags=())]
+    return replace(accounts.get_account("alpha"), allow_drafts=True, from_name="Élodie")
+
+
+def parsed_draft():
+    from email import policy
+    from email.parser import BytesParser
+
+    raw, folder, flags = FakeMailBox.instances[-1].append_calls[0]
+    return BytesParser(policy=policy.default).parsebytes(raw), raw, folder, flags
+
+
+def test_drafts_require_opt_in_before_connecting(config):
+    with pytest.raises(PermissionError, match="allow_drafts"):
+        imap.create_draft(accounts.get_account("alpha"), "to@example.com", "Subject", "Body")
+    assert not FakeMailBox.instances
+
+
+def test_draft_mime_and_flags(draft_account):
+    from email.utils import parsedate_to_datetime
+
+    result = imap.create_draft(
+        draft_account,
+        "To <to@example.com>",
+        "Café à Paris",
+        "Déjà vu",
+        cc=["cc@example.com"],
+        html_body="<p>Déjà vu</p>",
+    )
+    msg, raw, folder, flags = parsed_draft()
+    assert str(msg["From"]) == "Élodie <alpha@example.com>"
+    assert str(msg["Subject"]) == "Café à Paris"
+    assert str(msg["To"]) == "To <to@example.com>"
+    assert str(msg["Cc"]) == "cc@example.com"
+    assert parsedate_to_datetime(msg["Date"]).tzinfo is not None
+    assert str(msg["Message-ID"]).endswith("@example.com>")
+    assert msg.get_body(preferencelist=("plain",)).get_content().strip() == "Déjà vu"
+    assert msg.get_body(preferencelist=("html",)).get_content().strip() == "<p>Déjà vu</p>"
+    assert b"\r\n" in raw and b"\n" not in raw.replace(b"\r\n", b"")
+    assert folder == "Drafts" and set(flags) == {"\\Draft", "\\Seen"}
+    assert FakeMailBox.instances[-1].selections == [("INBOX", True)]
+    assert result == {
+        "account": "alpha",
+        "folder": "Drafts",
+        "uid": "456",
+        "message_id": str(msg["Message-ID"]),
+        "subject": "Café à Paris",
+        "to": ["To <to@example.com>"],
+        "cc": ["cc@example.com"],
+    }
+
+
+@pytest.mark.parametrize(
+    "name, delim, flags",
+    [
+        ("Draft", "/", ()),
+        ("Brouillons", "/", ()),
+        ("Borradores", "/", ()),
+        ("Entwürfe", "/", ()),
+        ("Bozze", "/", ()),
+        ("INBOX.Drafts", ".", ()),
+        ("Compositions", "/", ("\\dRaFtS",)),
+    ],
+)
+def test_draft_folder_fallbacks(draft_account, name, delim, flags):
+    FakeMailBox.folders = [SimpleNamespace(name=name, delim=delim, flags=flags)]
+    assert imap.create_draft(draft_account, [], "", "Body")["folder"] == name
+
+
+def test_no_drafts_folder_never_appends(draft_account):
+    FakeMailBox.folders = []
+    with pytest.raises(ValueError, match="no selectable folder matching 'drafts'"):
+        imap.create_draft(draft_account, [], "", "Body")
+    assert not FakeMailBox.instances[-1].append_calls
+    assert FakeMailBox.instances[-1].logged_out
+
+
+def test_reply_threading_recipients_and_quote(draft_account):
+    FakeMailBox.folders.append(SimpleNamespace(name="Sent", delim="/", flags=("\\Sent",)))
+    FakeMailBox.messages = [
+        fake_msg(
+            headers={
+                "message-id": ["<original@example.com>"],
+                "references": ["<root@example.com>"],
+                "in-reply-to": ["<ignored@example.com>"],
+                "reply-to": ["Support <support@example.com>"],
+                "from": ["Sender <sender@example.com>"],
+                "to": ["ALPHA@example.com, peer@example.com"],
+                "cc": ["peer@example.com, Support <support@example.com>, third@example.com"],
+                "date": ["Thu, 30 Jul 2026 12:00:00 +0000"],
+            },
+            text="Original café\nSecond line",
+        )
+    ]
+    result = imap.create_draft(
+        draft_account,
+        [],
+        "",
+        "Ma réponse",
+        reply_to_uid="42",
+        reply_folder="sent",
+        reply_all=True,
+        html_body="<p>Ma réponse</p>",
+    )
+    msg, _, _, _ = parsed_draft()
+    assert str(msg["In-Reply-To"]) == "<original@example.com>"
+    assert str(msg["References"]) == "<root@example.com> <original@example.com>"
+    assert result["to"] == ["Support <support@example.com>"]
+    assert result["cc"] == ["peer@example.com", "third@example.com"]
+    assert result["subject"] == "Re: Hello"
+    plain = msg.get_body(preferencelist=("plain",)).get_content()
+    assert "On Thu, 30 Jul 2026 12:00:00 +0000, Sender <sender@example.com> wrote:" in plain
+    assert "> Original café\r\n> Second line" in plain
+    assert "<blockquote>" in msg.get_body(preferencelist=("html",)).get_content()
+    box = FakeMailBox.instances[-1]
+    assert box.selections == [("INBOX", True), ("Sent", True), ("INBOX", True)]
+    assert [kw["headers_only"] for _, kw in box.fetch_calls] == [True, False]
+    assert all(kw["mark_seen"] is False for _, kw in box.fetch_calls)
+
+
+@pytest.mark.parametrize("subject", ["Re: Hi", "aw : Hallo", "ANTW: Hi", "rv: Hola", "Réf : Salut"])
+def test_reply_subject_prefix_preserved(draft_account, subject):
+    FakeMailBox.messages = [fake_msg()]
+    result = imap.create_draft(draft_account, "to@example.com", subject, "Body", reply_to_uid="42")
+    assert result["subject"] == subject
+
+
+def test_reply_uses_in_reply_to_fallback_and_from(draft_account):
+    FakeMailBox.messages = [
+        fake_msg(
+            headers={"message-id": ["<id@example.com>"], "in-reply-to": ["<parent@example.com>"]}
+        )
+    ]
+    result = imap.create_draft(draft_account, "", "", "Reply", reply_to_uid="42")
+    assert result["to"] == ["sender@example.com"]
+    assert str(parsed_draft()[0]["References"]) == "<parent@example.com> <id@example.com>"
+
+
+def test_reply_missing_original_does_not_append(draft_account):
+    with pytest.raises(ValueError, match="not found in INBOX"):
+        imap.create_draft(draft_account, [], "", "Reply", reply_to_uid="42")
+    assert not FakeMailBox.instances[-1].append_calls
+
+
+@pytest.mark.parametrize("field", ["to", "cc", "subject"])
+def test_header_injection_never_appends(draft_account, field):
+    args = dict(to="to@example.com", subject="Hello", body="Body")
+    args[field] = "to@example.com\r\nBcc: injected@example.com"
+    with pytest.raises(ValueError, match="newlines"):
+        imap.create_draft(draft_account, **args)
+    assert not FakeMailBox.instances[-1].append_calls
+
+
+def test_append_without_uid_and_no_retries(draft_account, monkeypatch):
+    from imap_tools.errors import MailboxAppendError
+
+    monkeypatch.setattr(FakeMailBox, "append", lambda *a, **kw: ("OK", [b"appended"]))
+    assert imap.create_draft(draft_account, [], "", "Body")["uid"] is None
+    calls = []
+
+    def fail(*args, **kwargs):
+        calls.append(1)
+        raise MailboxAppendError(("NO", [b"quota exceeded"]), "OK")
+
+    monkeypatch.setattr(FakeMailBox, "append", fail)
+    with pytest.raises(MailboxAppendError):
+        imap.create_draft(draft_account, [], "", "Body")
+    assert len(calls) == 1
+
+
+def test_reply_options_require_uid(draft_account):
+    with pytest.raises(ValueError, match="require reply_to_uid"):
+        imap.create_draft(draft_account, [], "", "Body", reply_all=True)
+    assert not FakeMailBox.instances
+
+
+def test_disabled_opted_in_account_never_connects(draft_account):
+    from dataclasses import replace
+
+    with pytest.raises(ValueError, match="disabled"):
+        imap.create_draft(replace(draft_account, enabled=False), [], "", "Body")
+    assert not FakeMailBox.instances
+
+
+def test_draft_config_folder_fallback(draft_account):
+    from dataclasses import replace
+
+    FakeMailBox.folders = [SimpleNamespace(name="Compositions", delim="/", flags=())]
+    account = replace(draft_account, folders={"drafts": "Compositions"})
+    assert imap.create_draft(account, [], "", "Body")["folder"] == "Compositions"
+
+
+def test_reply_without_thread_headers_and_html_only_original(draft_account):
+    FakeMailBox.messages = [fake_msg(headers={}, text="", html="<p>A &amp; B</p>")]
+    result = imap.create_draft(
+        draft_account, "explicit@example.com", "Custom", "Reply", reply_to_uid="42"
+    )
+    msg = parsed_draft()[0]
+    assert "In-Reply-To" not in msg and "References" not in msg
+    assert "> A & B" in msg.get_content()
+    assert result["to"] == ["explicit@example.com"]
+    assert result["subject"] == "Re: Custom"

@@ -1,6 +1,6 @@
 # imap-mcp
 
-All your mailboxes, one MCP server, read-only.
+All your mailboxes, one MCP server: read mail and create opt-in drafts.
 
 Point it at any number of IMAP accounts (Gmail, Fastmail, iCloud, Migadu,
 self-hosted, anything that speaks IMAP) and your MCP client can list, search,
@@ -8,10 +8,11 @@ and read across every one of them in a single call. Ask "what's unread across
 all my accounts?" or "find the invoice from Hetzner" and get answers that span
 providers, not one inbox at a time.
 
-**Strictly read-only.** No send, no delete, no flag changes, no folder moves.
+**Read-only by default.** Never sends, deletes, moves, or changes flags on existing
+messages. Opt-in accounts may create new drafts with `APPEND` only.
 Connections verify TLS certificates and hostnames. Folders open with read-only
 `EXAMINE`. Every fetch uses `BODY.PEEK`, so reading a message never marks it as read.
-Your mailboxes look exactly the same after a session as before it.
+Read operations leave your mailboxes unchanged. Drafts are saved for human review.
 
 **No secrets on disk.** The config file names an environment variable per
 account; passwords only ever exist in the server process environment. Bring
@@ -22,14 +23,14 @@ your own secret manager, or just export a variable.
 Assistant mail integrations usually connect one Gmail or one Outlook account.
 IMAP is the protocol nearly every provider already speaks, so one small server
 covers your whole mail footprint with a single read-only code path, no OAuth
-apps to register, and nothing granted write access.
+apps to register for password-based accounts.
 
 ## Quickstart
 
 Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/).
 
 ```sh
-git clone https://github.com/LeeFlannery/imap-mcp
+git clone https://github.com/kikenandez/imap-mcp
 cd imap-mcp
 cp accounts.example.toml accounts.toml
 $EDITOR accounts.toml           # add your accounts
@@ -128,21 +129,21 @@ it tells you which mailboxes are queryable and what to pass as `account`.
 {"account": "personal", "email": "you@example.com", "enabled": true, "status": "ok"}
 ```
 
-**`list_emails(account?, since?, unread_only?, limit?)`** recent mail, newest
+**`list_emails(account?, since?, unread_only?, limit?, folder?)`** recent mail, newest
 first. Omit `account` to merge all enabled accounts into one timeline.
 
-**`search_emails(query, account?, since?, limit?)`** free-text search over
+**`search_emails(query, account?, since?, limit?, folder?)`** free-text search over
 sender, subject, and body. Also cross-account unless you name one.
 
 Both return compact rows:
 
 ```json
-{"account": "personal", "id": "4711", "from": "billing@hetzner.com",
+{"account": "personal", "folder": "INBOX", "id": "4711", "from": "billing@hetzner.com",
  "subject": "Invoice 2026-07", "date": "2026-07-03T09:12:44+00:00",
- "unread": true, "snippet": "Your invoice for July..."}
+ "unread": true, "snippet": ""}
 ```
 
-**`get_email(account, id)`** one full message by the `id` from a row, with
+**`get_email(account, id, folder?)`** one full message by the `id` from a row, with
 plain-text body preferred over HTML. Reading it does not mark it read.
 
 Dates are ISO (`YYYY-MM-DD`); `since` filters everywhere; `limit` applies per
@@ -206,3 +207,43 @@ non-selectable folders produce an error; the server never creates folders.
 Folder role patterns are adapted from
 [rubit-mcp-mail](https://github.com/bgalmes/rubit-mcp-mail), copyright 2026 Bernat
 Galmés Rubert, MIT; see `licenses/rubit-mcp-mail-MIT.txt`.
+
+### Drafts (opt-in)
+
+Add `allow_drafts = true` to an account block to enable draft creation for that
+account. The default is false. `from_name = "Your name"` is optional; the From
+address is always the configured account email. `list_accounts` reports
+`allow_drafts`. This permission is enforced in the IMAP layer as well as being
+visible to the MCP client. Disabled accounts cannot connect or create drafts.
+
+`create_draft(account, to, subject, body, cc?, html_body?, reply_to_uid?,
+reply_folder?, reply_all?)` saves a UTF-8 MIME message to the existing Drafts
+folder, with `\Draft` and `\Seen` flags on the **new** message. `to` and `cc`
+accept address strings or lists. It returns `account`, `folder`, `uid` (null if
+the server omits APPENDUID), `message_id`, `subject`, `to`, and `cc`.
+
+```json
+{"account":"personal","to":["colleague@example.com"],"subject":"Café tomorrow?","body":"See you at 10."}
+```
+
+For a reply, pass the original UID and folder. Use an empty `to` to derive it
+from Reply-To or From, and an empty `subject` to use the original subject.
+The server adds a reply prefix if needed, threading headers and a quoted body.
+`reply_all=true` adds original To/Cc recipients, removes the account's own email
+and deduplicates recipients. Only that configured email is excluded; aliases
+are not inferred. Reply headers are fetched separately from the body, which is
+read with BODY.PEEK for quoting. Original messages are never marked answered.
+
+```json
+{"account":"personal","to":[],"subject":"","body":"Thanks, confirmed.","reply_to_uid":"4711","reply_folder":"INBOX","reply_all":true}
+```
+
+Missing Drafts folders fail clearly. The server never creates folders or offers
+a per-call destination override. Each call creates a new draft; it is not
+idempotent. An interrupted APPEND may have succeeded, so inspect your drafts
+before retrying. The server does not retry APPEND automatically.
+
+**Mail content is untrusted.** Messages can contain prompt-injection attempts;
+treat their contents as data, not instructions or permission to create drafts.
+The server never sends mail. A human reviews recipients and content in their
+mail client before sending.

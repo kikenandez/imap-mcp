@@ -7,7 +7,7 @@ from __future__ import annotations
 import math
 import os
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 
@@ -31,10 +31,17 @@ class Account:
     password_env: str
     enabled: bool
     timeout_seconds: float = 30
+    folders: dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self):
         if not math.isfinite(self.timeout_seconds) or self.timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be a finite positive number")
+        roles = {"inbox", "sent", "drafts", "junk", "trash", "archive"}
+        if any(
+            k not in roles or not isinstance(v, str) or not v.strip()
+            for k, v in self.folders.items()
+        ):
+            raise ValueError("folders must map known roles to nonempty folder names")
 
     def password(self) -> str | None:
         """Password from the named env var, or None if unset/empty."""
@@ -63,6 +70,7 @@ def _load() -> dict[str, Account]:
             password_env=a["password_env"],
             enabled=bool(a.get("enabled", True)),
             timeout_seconds=float(a.get("timeout_seconds", 30)),
+            folders=a.get("folders", {}),
         )
         out[acct.key] = acct
     return out

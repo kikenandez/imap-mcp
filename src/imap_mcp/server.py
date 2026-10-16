@@ -80,16 +80,18 @@ def list_emails(
     since: str | None = None,
     unread_only: bool = False,
     limit: int = 25,
+    folder: str | None = None,
 ) -> list[dict]:
     """List recent emails, newest first.
 
     account: account key (see list_accounts). Omit to merge ALL enabled accounts.
     since: ISO date (YYYY-MM-DD) lower bound, optional.
     unread_only: only unseen messages.
-    limit: max rows (per account when merging).
+    limit: max rows, capped at 100 per account.
+    folder: role or raw folder name; defaults to INBOX.
     """
     since_d = _parse_since(since)
-    return _rows(account, since=since_d, unread_only=unread_only, limit=limit)
+    return _rows(account, since=since_d, unread_only=unread_only, limit=limit, folder=folder)
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
@@ -98,30 +100,38 @@ def search_emails(
     account: str | None = None,
     since: str | None = None,
     limit: int = 25,
+    folder: str | None = None,
 ) -> list[dict]:
     """Search emails across from/subject/body text, newest first.
 
     query: free text; matched against sender, subject, and body (IMAP OR).
     account: omit to search ALL enabled accounts.
     since: ISO date (YYYY-MM-DD) lower bound, optional.
-    limit: max rows (per account when merging).
+    limit: max rows, capped at 100 per account.
+    folder: role or raw folder name; defaults to INBOX.
     """
     since_d = _parse_since(since)
-    return _rows(account, query=query, since=since_d, limit=limit)
+    return _rows(account, query=query, since=since_d, limit=limit, folder=folder)
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
-def get_email(account: str, id: str) -> dict:
+def get_email(account: str, id: str, folder: str | None = None) -> dict:
     """Fetch one full email (plain-text body preferred) by account + message id.
 
     id is the value returned in list_emails/search_emails rows (IMAP UID).
     Reading does not mark the message as read.
     """
     a = acct.get_account(account)
-    msg = imap.fetch_one(a, id)
+    msg = imap.fetch_one(a, id, folder=folder)
     if msg is None:
-        return {"account": account, "id": id, "error": "not found in INBOX"}
+        return {"account": account, "id": id, "error": f"not found in {folder or 'INBOX'}"}
     return msg
+
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+def list_folders(account: str) -> list[dict]:
+    """List folder names, hierarchy delimiters, flags and resolved roles for an account."""
+    return imap.list_folders(acct.get_account(account))
 
 
 def main() -> None:

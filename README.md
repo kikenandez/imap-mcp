@@ -184,3 +184,25 @@ are converted to plain text. Cross-account dates are ordered in UTC.
 Search uses UTF-8, retrying with an ASCII-folded query if the server rejects it;
 this fallback can lose accent distinctions. Queries without an ASCII equivalent
 return an account error rather than an unfiltered search.
+
+### Folders
+
+`list_folders(account)` returns each folder's name, delimiter, flags and role.
+`list_emails`, `search_emails`, and `get_email` accept `folder`, either an exact
+server name or a role: `inbox`, `sent`, `drafts`, `junk`, `trash`, `archive`.
+The default is INBOX. Message results include the resolved `folder`; always use
+that folder with the returned UID when fetching a message.
+
+Role detection prefers SPECIAL-USE flags, then localized leaf names using the
+server's delimiter. Configuration supplies a final fallback for unusual names:
+
+```toml
+[account.folders]  # belongs to the immediately preceding [[account]]
+drafts = "My compositions"
+```
+
+These mappings do not override a server flag or a recognized name. Missing or
+non-selectable folders produce an error; the server never creates folders.
+Folder role patterns are adapted from
+[rubit-mcp-mail](https://github.com/bgalmes/rubit-mcp-mail), copyright 2026 Bernat
+Galmés Rubert, MIT; see `licenses/rubit-mcp-mail-MIT.txt`.

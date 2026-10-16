@@ -80,7 +80,7 @@ def test_list_emails_single_account_passes_filters(config, monkeypatch):
     monkeypatch.setattr(imap, "fetch_rows", fetch_rows)
     server.list_emails(account="alpha", since="2026-07-01", unread_only=True, limit=5)
     assert seen == {
-        "alpha": {"since": dt.date(2026, 7, 1), "unread_only": True, "limit": 5},
+        "alpha": {"since": dt.date(2026, 7, 1), "unread_only": True, "limit": 5, "folder": None},
     }
 
 
@@ -107,16 +107,21 @@ def test_search_emails_passes_query(config, monkeypatch):
     monkeypatch.setattr(imap, "fetch_rows", fetch_rows)
     server.search_emails("invoice", since="2026-07-01", limit=10)
     assert set(seen) == {"alpha", "gmailish"}
-    assert seen["alpha"] == {"query": "invoice", "since": dt.date(2026, 7, 1), "limit": 10}
+    assert seen["alpha"] == {
+        "query": "invoice",
+        "since": dt.date(2026, 7, 1),
+        "limit": 10,
+        "folder": None,
+    }
 
 
 def test_get_email_found(config, monkeypatch):
-    monkeypatch.setattr(imap, "fetch_one", lambda a, uid: {"account": a.key, "id": uid})
+    monkeypatch.setattr(imap, "fetch_one", lambda a, uid, **kwargs: {"account": a.key, "id": uid})
     assert server.get_email("alpha", "42") == {"account": "alpha", "id": "42"}
 
 
 def test_get_email_not_found(config, monkeypatch):
-    monkeypatch.setattr(imap, "fetch_one", lambda a, uid: None)
+    monkeypatch.setattr(imap, "fetch_one", lambda a, uid, **kwargs: None)
     out = server.get_email("alpha", "42")
     assert out["error"] == "not found in INBOX"
 
@@ -125,7 +130,7 @@ def test_all_tools_registered():
     import asyncio
 
     tools = {t.name for t in asyncio.run(server.mcp.list_tools())}
-    assert tools == {"list_accounts", "list_emails", "search_emails", "get_email"}
+    assert tools == {"list_accounts", "list_emails", "search_emails", "get_email", "list_folders"}
 
 
 def test_dates_sort_by_instant(config, monkeypatch):
@@ -175,3 +180,13 @@ def test_read_only_annotations():
         t.annotations.model_dump(by_alias=True)["readOnlyHint"]
         for t in asyncio.run(server.mcp.list_tools())
     )
+
+
+def test_folder_tools_forward_arguments(config, monkeypatch):
+    monkeypatch.setattr(imap, "fetch_rows", lambda a, **kw: [{"folder": kw["folder"]}])
+    assert server.list_emails(account="alpha", folder="sent") == [{"folder": "sent"}]
+    assert server.search_emails("x", account="alpha", folder="sent") == [{"folder": "sent"}]
+    monkeypatch.setattr(imap, "fetch_one", lambda a, uid, folder: None)
+    assert server.get_email("alpha", "42", folder="sent")["error"] == "not found in sent"
+    monkeypatch.setattr(imap, "list_folders", lambda a: [{"account": a.key}])
+    assert server.list_folders("alpha") == [{"account": "alpha"}]

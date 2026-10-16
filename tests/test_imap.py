@@ -11,11 +11,16 @@ class FakeMailBox:
 
     instances = []
     messages = []
+    folders = []
 
     def __init__(self, host, port=993, ssl_context=None, timeout=None):
         self.ssl_context = ssl_context
         self.timeout = timeout
-        self.folder = SimpleNamespace(set=self.set_folder)
+        self.folder = SimpleNamespace(
+            set=self.set_folder,
+            get=lambda: self.selections[-1][0],
+            list=lambda: FakeMailBox.folders,
+        )
         self.selections = []
         self.host = host
         self.port = port
@@ -44,6 +49,7 @@ class FakeMailBox:
 def fake_mailbox(monkeypatch):
     FakeMailBox.instances = []
     FakeMailBox.messages = []
+    FakeMailBox.folders = []
     monkeypatch.setattr(imap, "MailBox", FakeMailBox)
 
 
@@ -164,6 +170,7 @@ def test_fetch_one_full_message(config, monkeypatch):
     assert msg == {
         "account": "alpha",
         "id": "42",
+        "folder": "INBOX",
         "from": "sender@example.com",
         "to": ["rcpt@example.com"],
         "cc": [],
@@ -260,3 +267,19 @@ def test_html_body_strips_hidden_content_and_decodes_entities():
         )
         == "A & B\nC"
     )
+
+
+def test_folder_reads_use_examine_and_return_folder(config, monkeypatch):
+    monkeypatch.setenv("ALPHA_PW", "test-password")
+    FakeMailBox.folders = [SimpleNamespace(name="INBOX.Drafts", delim=".", flags=())]
+    FakeMailBox.messages = [fake_msg()]
+    account = accounts.get_account("alpha")
+    for result in (
+        imap.fetch_rows(account, folder="drafts"),
+        [imap.fetch_one(account, "42", folder="drafts")],
+    ):
+        assert result[0]["folder"] == "INBOX.Drafts"
+    assert all(box.selections == [("INBOX.Drafts", True)] for box in FakeMailBox.instances)
+    assert imap.list_folders(account) == [
+        {"name": "INBOX.Drafts", "delimiter": ".", "flags": [], "role": "drafts"}
+    ]

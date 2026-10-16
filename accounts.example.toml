@@ -26,3 +26,7 @@ host = "imap.gmail.com"
 port = 993
 password_env = "GMAIL_APP_PASSWORD"
 enabled = false
+
+# Optional role fallback for this account, used after SPECIAL-USE flags and names.
+# [account.folders]
+# drafts = "My compositions"

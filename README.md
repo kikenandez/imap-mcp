@@ -5,7 +5,7 @@ All your mailboxes, one MCP server: read mail and create opt-in drafts.
 Point it at any number of IMAP accounts (Gmail, Fastmail, iCloud, Migadu,
 self-hosted, anything that speaks IMAP) and your MCP client can list, search,
 and read across every one of them in a single call. Ask "what's unread across
-all my accounts?" or "find the invoice from Hetzner" and get answers that span
+all my accounts?" or "find the invoice from a supplier" and get answers that span
 providers, not one inbox at a time.
 
 **Read-only by default.** Never sends, deletes, moves, or changes flags on existing
@@ -14,9 +14,11 @@ Connections verify TLS certificates and hostnames. Folders open with read-only
 `EXAMINE`. Every fetch uses `BODY.PEEK`, so reading a message never marks it as read.
 Read operations leave your mailboxes unchanged. Drafts are saved for human review.
 
-**No secrets on disk.** The config file names an environment variable per
-account; passwords only ever exist in the server process environment. Bring
-your own secret manager, or just export a variable.
+**No passwords in configuration.** Accounts reference an environment variable or
+an existing macOS Keychain item. The server resolves the reference on every
+connection, so secret rotation does not require reloading account configuration.
+Keychain stores secrets in the OS credential store; the server never copies them
+to a plaintext credential file. A `password` field in TOML is rejected.
 
 ## Why IMAP
 
@@ -35,7 +37,7 @@ cd imap-mcp
 cp accounts.example.toml accounts.toml
 $EDITOR accounts.toml           # add your accounts
 export PERSONAL_IMAP_PASSWORD='...'
-uv run imap-mcp                 # starts the MCP server on stdio
+uv run --locked imap-mcp                 # starts the MCP server on stdio
 ```
 
 That's it. Register it with your MCP client (below) and start asking about
@@ -52,7 +54,7 @@ label = "you@example.com (Fastmail)"    # optional, defaults to email
 email = "you@example.com"               # IMAP login
 host = "imap.fastmail.com"
 port = 993                              # optional, defaults to 993
-password_env = "PERSONAL_IMAP_PASSWORD" # env var holding the password
+password_ref = "env:PERSONAL_IMAP_PASSWORD" # reference, never a password
 enabled = true                          # optional, defaults to true
 timeout_seconds = 30                    # positive socket timeout, per account
 ```
@@ -86,19 +88,36 @@ No live AOL, Yahoo, OVH MX Plan or OVH Zimbra account has been tested for this
 release. Folder names, SPECIAL-USE flags and native UTF-8 support remain
 unverified per provider. Use `doctor` to inspect your own account.
 
-### Passwords
+### Password references
 
-Each account's `password_env` names an environment variable that must be set
-when the server runs. Any of these work:
+Only these reference schemes are supported:
+
+```toml
+password_ref = "env:IMAP_EXAMPLE_PASSWORD"
+# Or, on macOS, for an account whose key is "example":
+# password_ref = "keychain:pkma-mail-example/pkma"
+```
+
+For `env:`, the named variable must be available in the server process environment.
+For `keychain:`, the generic-password item uses **service `pkma-mail-<key>`** and
+**account `pkma`**. This exact naming lets a provisioning helper and the server
+find the same item. The helper stores the item; the server only reads it using
+`/usr/bin/security find-generic-password`. No real secret needs to be passed to an
+assistant. Keychain references require macOS; use `env:` on other platforms.
+
+Both sources are resolved inside the server at each connection, never during
+configuration loading, and secret values are never cached or included in errors.
+A missing item is reported as `no-credential`; a denied or failed Keychain lookup
+is reported as unavailable. There is no fallback to another secret source.
+
+The legacy `password_env = "VARIABLE_NAME"` remains supported as an alias for
+`password_ref = "env:VARIABLE_NAME"`. Do not specify both. Plaintext `password`
+fields, including on disabled accounts, are forbidden. `file:`, `op:`, executable
+references and other schemes are rejected. You may still inject environment
+variables externally with your secret manager:
 
 ```sh
-# plain export in the shell that launches your MCP client
-export PERSONAL_IMAP_PASSWORD='...'
-
-# direnv, sops, pass, whatever you already use
-
-# 1Password: put op:// references in an env file and wrap the command
-op run --env-file=op.env -- uv run imap-mcp
+op run --env-file=op.env -- uv run --locked imap-mcp
 ```
 
 ## Register with an MCP client
@@ -106,7 +125,7 @@ op run --env-file=op.env -- uv run imap-mcp
 ### Claude Code
 
 ```sh
-claude mcp add imap -- uv run --directory /path/to/imap-mcp imap-mcp
+claude mcp add imap -- uv run --locked --directory /path/to/imap-mcp imap-mcp
 ```
 
 Or in `.mcp.json` / your user MCP config:
@@ -116,7 +135,7 @@ Or in `.mcp.json` / your user MCP config:
   "mcpServers": {
     "imap": {
       "command": "uv",
-      "args": ["run", "--directory", "/path/to/imap-mcp", "imap-mcp"]
+      "args": ["run", "--locked", "--directory", "/path/to/imap-mcp", "imap-mcp"]
     }
   }
 }
@@ -127,10 +146,10 @@ Or in `.mcp.json` / your user MCP config:
 Same command and args in the client's MCP server config
 (`claude_desktop_config.json`, etc.). Any stdio MCP client works.
 
-Either way, the password env vars must be visible to the spawned process:
+For environment references, the variables must be visible to the spawned process:
 export them in the environment the client launches from, or wrap the command
 in your secret injector, e.g. `"command": "op"`,
-`"args": ["run", "--env-file=/path/to/op.env", "--", "uv", "run", ...]`.
+`"args": ["run", "--env-file=/path/to/op.env", "--", "uv", "run", "--locked", ...]`.
 
 ## Tools
 
@@ -150,12 +169,12 @@ sender, subject, and body. Also cross-account unless you name one.
 Both return compact rows:
 
 ```json
-{"account": "personal", "folder": "INBOX", "id": "4711", "from": "billing@hetzner.com",
+{"account": "personal", "folder": "INBOX", "id": "4711", "from": "billing@example.com",
  "subject": "Invoice 2026-07", "date": "2026-07-03T09:12:44+00:00",
  "unread": true, "snippet": ""}
 ```
 
-**`get_email(account, id, folder?)`** one full message by the `id` from a row, with
+**`get_email(account, id, folder?)`** one bounded message by the `id` from a row, with
 plain-text body preferred over HTML. The UID must be a positive ASCII decimal
 number; ranges, lists and wildcards are rejected before connecting. At most one
 message is fetched. Reading it does not mark it read.
@@ -166,8 +185,8 @@ and the other accounts still answer.
 
 ## Troubleshooting
 
-- **`status: "no-credential"`**: the account's `password_env` variable is not
-  set in the server's environment. Remember the server inherits its env from
+- **`status: "no-credential"`**: the referenced environment variable is unset/empty
+  or the Keychain item is missing. Remember the server inherits its env from
   whatever launched it (your MCP client), not from your interactive shell.
 - **`status: "unreachable: MailboxLoginError"`** on Gmail/iCloud/Yahoo: you're
   using the account password; these providers require an app password (see
@@ -298,6 +317,39 @@ unread states are unchanged. No credentials are needed for the automated tests.
 
 ### Roadmap
 
-This version implements fork-plan phases 0–3. Phase 4 (Microsoft 365 device-code
+This version implements fork-plan phases 0–3 plus password references and bounded reads. Phase 4 (Microsoft 365 device-code
 OAuth, token caching and `imap-mcp auth`) is deferred as specified in the plan.
 Password-based Outlook/Microsoft 365 authentication is not supported.
+
+### Read limits and message identity
+
+`get_email` returns at most **65,536 UTF-8 bytes** of body text, without splitting
+a Unicode character. `body_truncated` reports truncation and `body_limit_bytes`
+reports the limit. Reply drafts use the same bounded quote and explicitly mark
+truncated originals. Plain text is preferred; HTML-only messages discard hidden
+subtrees (`hidden`, `aria-hidden`, common inline display/visibility/opacity/zero
+font-size rules) and non-content elements such as scripts, styles and templates.
+This is a conservative text converter, not a browser or a full CSS renderer;
+stylesheet selectors, external CSS and visual layout are not evaluated.
+
+Full-message reads and reply-body reads request at most **5 MiB** through a
+partial `BODY.PEEK[]` fetch, including MIME headers and attachments. Larger
+messages are rejected, and incomplete MIME is not parsed as a complete message.
+List/search metadata remains available for oversized messages. This bound relies
+on the IMAP server honoring the requested partial range.
+
+List/search/get results include `stable_id` and `uidvalidity`. The opaque ID is
+deterministic for the account/server identity, resolved folder, UIDVALIDITY and
+UID; it survives reconnects and flag changes. Moving a message, renaming its
+folder/account or changing UIDVALIDITY produces a different ID. It is a mailbox
+identity, not a cross-folder content-deduplication key. `id` remains the numeric
+UID accepted by `get_email`; `message_id` exposes the sender's RFC Message-ID
+when present and remains null otherwise. UID scoping follows
+[RFC 9051 section 2.3.1.1](https://www.rfc-editor.org/rfc/rfc9051.html#section-2.3.1.1).
+
+### Public repository policy
+
+Commit only generic code, documentation and synthetic fixtures using reserved
+example domains. Keep real account details, client names/domains, credentials,
+integration briefs, mail samples and diagnostic/test-output files outside this
+public repository. See `AGENTS.md` for contributor rules.

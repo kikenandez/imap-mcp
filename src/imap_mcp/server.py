@@ -10,8 +10,9 @@ from mcp.types import ToolAnnotations
 
 from . import accounts as acct
 from . import imap
+from .credentials import MissingCredentialError
 
-mcp = MCPServer("imap-mcp", version="0.2.0")
+mcp = MCPServer("imap-mcp", version="0.3.0")
 
 
 def _parse_since(since: str | None) -> dt.date | None:
@@ -45,12 +46,12 @@ def list_accounts() -> list[dict]:
         }
         if not a.enabled:
             entry["status"] = "disabled"
-        elif not a.password():
-            entry["status"] = "no-credential"
         else:
             try:
                 with imap.open_box(a):
                     entry["status"] = "ok"
+            except MissingCredentialError:
+                entry["status"] = "no-credential"
             except Exception as e:
                 entry["status"] = f"unreachable: {type(e).__name__}"
         return entry
@@ -121,9 +122,11 @@ def search_emails(
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
 def get_email(account: str, id: str, folder: str | None = None) -> dict:
-    """Fetch one full email (plain-text body preferred) by account + message id.
+    """Fetch one email with a bounded plain-text body by account + numeric IMAP UID.
 
     id is the value returned in list_emails/search_emails rows (IMAP UID).
+    Bodies are capped at 64 KiB; body_truncated reports truncation.
+    Messages larger than 5 MiB are rejected. Results include stable_id and uidvalidity.
     Reading does not mark the message as read.
     """
     a = acct.get_account(account)

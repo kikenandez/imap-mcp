@@ -23,4 +23,11 @@ creds/
 # Personal notes/scripts
 .local/
 .DS_Store
-accounts.toml
+
+# Local integration material and runtime captures never belong in this public fork
+docs/integration/
+*.eml
+*.mbox
+*.log
+reports/
+test-results/

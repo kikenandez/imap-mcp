@@ -1,6 +1,4 @@
-"""Account registry. Loads non-secret config from accounts.toml; resolves each
-account's password from the environment at runtime (export it, use direnv, a
-secrets manager like 1Password's `op run`, whatever fits your setup)."""
+"""Non-secret account registry; credentials are resolved at each connection."""
 
 from __future__ import annotations
 
@@ -10,6 +8,8 @@ import tomllib
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
+
+from .credentials import resolve_password, validate_reference
 
 # Config resolution order: $IMAP_MCP_ACCOUNTS if set, else accounts.toml at the
 # project root (src/imap_mcp/accounts.py -> two parents up).
@@ -28,14 +28,20 @@ class Account:
     email: str
     host: str
     port: int
-    password_env: str
-    enabled: bool
+    password_env: str | None = None
+    enabled: bool = True
+    password_ref: str | None = None
     timeout_seconds: float = 30
     folders: dict[str, str] = field(default_factory=dict)
     allow_drafts: bool = False
     from_name: str | None = None
 
     def __post_init__(self):
+        if self.password_ref is not None and self.password_env is not None:
+            raise ValueError("use password_ref or legacy password_env, not both")
+        if self.password_env is not None and not isinstance(self.password_env, str):
+            raise ValueError("password_env must be an environment variable name")
+        validate_reference(self.credential_ref, self.key)
         if type(self.allow_drafts) is not bool or type(self.enabled) is not bool:
             raise ValueError("allow_drafts and enabled must be TOML booleans")
         if self.from_name is not None and not isinstance(self.from_name, str):
@@ -49,9 +55,17 @@ class Account:
         ):
             raise ValueError("folders must map known roles to nonempty folder names")
 
+    @property
+    def credential_ref(self) -> str:
+        if self.password_ref is not None:
+            return self.password_ref
+        if self.password_env:
+            return f"env:{self.password_env}"
+        raise ValueError("an account requires password_ref (or legacy password_env)")
+
     def password(self) -> str | None:
-        """Password from the named env var, or None if unset/empty."""
-        return os.environ.get(self.password_env) or None
+        """Resolve on every call, including after secret rotation; never cache values."""
+        return resolve_password(self.credential_ref, self.key)
 
 
 @lru_cache(maxsize=1)
@@ -65,15 +79,20 @@ def _load() -> dict[str, Account]:
         )
     with path.open("rb") as fh:
         raw = tomllib.load(fh)
+    if "password" in raw:
+        raise ValueError("password fields are forbidden; use password_ref")
     out: dict[str, Account] = {}
     for a in raw.get("account", []):
+        if "password" in a:
+            raise ValueError("password fields are forbidden; use password_ref")
         acct = Account(
             key=a["key"],
             label=a.get("label", a["email"]),
             email=a["email"],
             host=a["host"],
             port=int(a.get("port", 993)),
-            password_env=a["password_env"],
+            password_env=a.get("password_env"),
+            password_ref=a.get("password_ref"),
             enabled=a.get("enabled", True),
             timeout_seconds=float(a.get("timeout_seconds", 30)),
             folders=a.get("folders", {}),

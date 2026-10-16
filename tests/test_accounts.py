@@ -17,7 +17,7 @@ def test_load_reads_fields_and_defaults(config):
     # defaults: port 993, label falls back to email, enabled true
     gmailish = accts["gmailish"]
     assert gmailish.port == 993
-    assert gmailish.label == "beta@gmail.com"
+    assert gmailish.label == "beta@example.com"
     assert gmailish.enabled
 
 
@@ -56,7 +56,7 @@ def test_example_config_is_loadable(monkeypatch):
     try:
         accts = accounts.all_accounts()
         assert accts, "example config should define at least one account"
-        assert all(a.password_env for a in accts)
+        assert all(a.credential_ref for a in accts)
     finally:
         accounts._load.cache_clear()
 

@@ -16,7 +16,7 @@ CONFIG = textwrap.dedent("""\
 
     [[account]]
     key = "gmailish"
-    email = "beta@gmail.com"
+    email = "beta@example.com"
     host = "imap.gmail.com"
     password_env = "BETA_PW"
 

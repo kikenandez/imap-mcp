@@ -174,7 +174,7 @@ def test_real_stdio_handshake_and_tool_discovery(tmp_path):
             async with stdio_client(parameters) as (reader, writer):
                 async with ClientSession(reader, writer) as session:
                     initialized = await session.initialize()
-                    assert initialized.model_dump(by_alias=True)["serverInfo"]["version"] == "0.2.0"
+                    assert initialized.model_dump(by_alias=True)["serverInfo"]["version"] == "0.3.0"
                     result = await session.list_tools()
                     assert {tool.name for tool in result.tools} == {
                         "list_accounts",

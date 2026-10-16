@@ -14,6 +14,9 @@ class FakeMailBox:
     folders = []
 
     def __init__(self, host, port=993, ssl_context=None, timeout=None):
+        self.client = SimpleNamespace(uid=self.uid_fetch, response=self.response)
+        self.uid_calls = []
+        self.validity = b"123"
         self.ssl_context = ssl_context
         self.timeout = timeout
         self.folder = SimpleNamespace(
@@ -43,6 +46,47 @@ class FakeMailBox:
         self.fetch_criteria = criteria
         self.fetch_kwargs = kwargs
         return iter(FakeMailBox.messages)
+
+    def response(self, name):
+        assert name == "UIDVALIDITY"
+        return name, [self.validity]
+
+    def uid_fetch(self, command, uid, parts):
+        import re
+        from email import policy
+        from email.message import EmailMessage
+        from email.utils import format_datetime
+
+        self.uid_calls.append((command, uid, parts))
+        assert command == "FETCH"
+        if not FakeMailBox.messages:
+            return "OK", [None]
+        source = FakeMailBox.messages[0]
+        message = EmailMessage(policy=policy.SMTP)
+        for name, values in source.headers.items():
+            for value in values:
+                message[name] = value
+        for name, value in {
+            "From": source.from_,
+            "To": ", ".join(source.to),
+            "Cc": ", ".join(source.cc),
+            "Subject": source.subject,
+            "Date": format_datetime(source.date),
+        }.items():
+            if name not in message:
+                message[name] = value
+        if source.text:
+            message.set_content(source.text)
+        else:
+            message.set_content(source.html, subtype="html")
+        raw = message.as_bytes()
+        limit = int(re.search(r"<0\.(\d+)>", parts)[1])
+        literal = raw[:limit]
+        metadata = (
+            f"1 (UID {source.uid} FLAGS ({' '.join(source.flags)}) "
+            f"RFC822.SIZE {len(raw)} BODY[]<0> {{{len(literal)}}}"
+        ).encode()
+        return "OK", [(metadata, literal), b")"]
 
     def append(self, message, folder, flag_set):
         self.append_calls.append((message, folder, flag_set))
@@ -125,6 +169,7 @@ def test_row_shape():
         "date": "2026-07-30T12:00:00+00:00",
         "unread": True,
         "snippet": "line one line two",
+        "message_id": "<abc@example.com>",
     }
 
 
@@ -186,9 +231,17 @@ def test_fetch_one_full_message(config, monkeypatch):
         "unread": False,
         "message_id": "<abc@example.com>",
         "body": "line one\nline two",
+        "body_truncated": False,
+        "body_limit_bytes": 65536,
+        **imap.message_identity(accounts.get_account("alpha"), "INBOX", "123", "42"),
     }
-    assert FakeMailBox.instances[-1].fetch_kwargs["mark_seen"] is False
-    assert FakeMailBox.instances[-1].fetch_kwargs["limit"] == 1
+    assert FakeMailBox.instances[-1].uid_calls == [
+        (
+            "FETCH",
+            "42",
+            f"(UID FLAGS RFC822.SIZE BODY.PEEK[]<0.{imap.MESSAGE_LIMIT_BYTES}>)",
+        )
+    ]
 
 
 def test_fetch_one_not_found(config, monkeypatch):
@@ -450,7 +503,8 @@ def test_reply_threading_recipients_and_quote(draft_account):
     assert "<blockquote>" in msg.get_body(preferencelist=("html",)).get_content()
     box = FakeMailBox.instances[-1]
     assert box.selections == [("INBOX", True), ("Sent", True), ("INBOX", True)]
-    assert [kw["headers_only"] for _, kw in box.fetch_calls] == [True, False]
+    assert [kw["headers_only"] for _, kw in box.fetch_calls] == [True]
+    assert "BODY.PEEK[]<0." in box.uid_calls[0][2]
     assert all(kw["mark_seen"] is False for _, kw in box.fetch_calls)
 
 
@@ -536,3 +590,136 @@ def test_reply_without_thread_headers_and_html_only_original(draft_account):
     assert "> A & B" in msg.get_content()
     assert result["to"] == ["explicit@example.com"]
     assert result["subject"] == "Re: Custom"
+
+
+def test_open_box_resolves_rotated_reference_once_per_connection(config, monkeypatch):
+    from dataclasses import replace
+
+    account = replace(
+        accounts.get_account("alpha"), password_env=None, password_ref="env:TEST_ROTATION"
+    )
+    for value in ["fake-first", "fake-second"]:
+        monkeypatch.setenv("TEST_ROTATION", value)
+        with imap.open_box(account) as box:
+            assert box.login_args[1] == value
+
+
+def test_list_and_get_stable_id_match_without_message_id(config, monkeypatch):
+    monkeypatch.setenv("ALPHA_PW", "fake-password")
+    FakeMailBox.messages = [fake_msg(headers={})]
+    account = accounts.get_account("alpha")
+    listed = imap.fetch_rows(account)[0]
+    fetched = imap.fetch_one(account, "42")
+    assert listed["stable_id"] == fetched["stable_id"]
+    assert listed["message_id"] is None and fetched["message_id"] is None
+    assert listed["uidvalidity"] == fetched["uidvalidity"] == "123"
+
+
+@pytest.mark.parametrize("validity", [None, b"", b"bad", b"0"])
+def test_missing_uidvalidity_fails_closed(config, monkeypatch, validity):
+    monkeypatch.setenv("ALPHA_PW", "fake-password")
+    monkeypatch.setattr(FakeMailBox, "response", lambda *args: ("UIDVALIDITY", [validity]))
+    with pytest.raises(RuntimeError, match="UIDVALIDITY"):
+        imap.fetch_rows(accounts.get_account("alpha"))
+
+
+def test_body_limit_visible_in_get_and_reply(draft_account):
+    FakeMailBox.messages = [fake_msg(text="x" * 70000)]
+    fetched = imap.fetch_one(draft_account, "42")
+    assert fetched["body_truncated"] and len(fetched["body"].encode()) == 65536
+    imap.create_draft(draft_account, [], "", "Reply", reply_to_uid="42")
+    message = parsed_draft()[0]
+    assert "[Original message truncated]" in message.get_content()
+
+
+def test_download_limit_rejects_large_message_before_parsing(draft_account, monkeypatch):
+    # Advertise a large message while returning a small bounded fragment.
+    def fetch(self, *args):
+        return "OK", [(b"1 (UID 42 RFC822.SIZE 9999999 BODY[]<0> {5}", b"abcde"), b")"]
+
+    monkeypatch.setattr(FakeMailBox, "uid_fetch", fetch)
+    monkeypatch.setattr(imap, "MailMessage", lambda *args: pytest.fail("parsed oversized MIME"))
+    with pytest.raises(ValueError, match="5 MiB"):
+        imap.fetch_one(draft_account, "42")
+    FakeMailBox.messages = [fake_msg()]
+    with pytest.raises(ValueError, match="5 MiB"):
+        imap.create_draft(draft_account, [], "", "Reply", reply_to_uid="42")
+    assert not FakeMailBox.instances[-1].append_calls
+
+
+@pytest.mark.parametrize(
+    "metadata, message",
+    [
+        (b"1 (UID 42 BODY[]<0> {5}", "missing RFC822.SIZE"),
+        (b"1 (UID 42 RFC822.SIZE 10 BODY[]<0> {5}", "incomplete message"),
+        (b"1 (UID 43 RFC822.SIZE 5 BODY[]<0> {5}", "different message UID"),
+    ],
+)
+def test_invalid_bounded_fetch_response(config, monkeypatch, metadata, message):
+    monkeypatch.setenv("ALPHA_PW", "fake-password")
+    monkeypatch.setattr(
+        FakeMailBox, "uid_fetch", lambda *args: ("OK", [(metadata, b"abcde"), b")"])
+    )
+    with pytest.raises(RuntimeError, match=message):
+        imap.fetch_one(accounts.get_account("alpha"), "42")
+
+
+def test_one_keychain_read_per_account_check(config, monkeypatch):
+    from imap_mcp import credentials, server
+
+    config.write_text(
+        config.read_text().replace(
+            'password_env = "ALPHA_PW"', 'password_ref = "keychain:pkma-mail-alpha/pkma"'
+        )
+    )
+    monkeypatch.setattr(credentials.sys, "platform", "darwin")
+    calls = []
+
+    def read(*args, **kwargs):
+        calls.append(1)
+        return SimpleNamespace(returncode=0, stdout="fake-password\n")
+
+    monkeypatch.setattr(credentials.subprocess, "run", read)
+    for count in [1, 2]:
+        status = {r["account"]: r["status"] for r in server.list_accounts()}
+        assert status["alpha"] == "ok"
+        assert len(calls) == count
+
+
+def test_raw_fetch_error_is_not_retried(config, monkeypatch):
+    from imap_tools.errors import MailboxFetchError
+
+    monkeypatch.setenv("ALPHA_PW", "fake-password")
+    calls = []
+
+    def fail(*args):
+        calls.append(1)
+        return "NO", [b"fetch rejected"]
+
+    monkeypatch.setattr(FakeMailBox, "uid_fetch", fail)
+    with pytest.raises(MailboxFetchError):
+        imap.fetch_one(accounts.get_account("alpha"), "42")
+    assert len(calls) == 1
+
+
+def test_oversized_literal_is_not_parsed(config, monkeypatch):
+    monkeypatch.setenv("ALPHA_PW", "fake-password")
+    monkeypatch.setattr(imap, "MESSAGE_LIMIT_BYTES", 4)
+    monkeypatch.setattr(
+        FakeMailBox, "uid_fetch", lambda *args: ("OK", [(b"1 (UID 42 RFC822.SIZE 5", b"abcde")])
+    )
+    monkeypatch.setattr(imap, "MailMessage", lambda *args: pytest.fail("parsed oversized MIME"))
+    with pytest.raises(ValueError, match="download limit"):
+        imap.fetch_one(accounts.get_account("alpha"), "42")
+
+
+def test_stable_id_ignores_flags_and_resolves_folder_roles(config, monkeypatch):
+    monkeypatch.setenv("ALPHA_PW", "fake-password")
+    FakeMailBox.messages = [fake_msg()]
+    FakeMailBox.folders = [SimpleNamespace(name="INBOX.Drafts", delim=".", flags=())]
+    account = accounts.get_account("alpha")
+    before = imap.fetch_rows(account, folder="drafts")[0]
+    FakeMailBox.messages = [fake_msg(flags=())]
+    after = imap.fetch_one(account, "42", folder="INBOX.Drafts")
+    assert before["stable_id"] == after["stable_id"]
+    assert before["unread"] is False and after["unread"] is True

@@ -29,6 +29,8 @@ def test_list_accounts_statuses(config, monkeypatch):
             return False
 
     def open_box(account):
+        if not account.password():
+            raise server.MissingCredentialError("missing test credential")
         if account.key == "gmailish":
             raise ConnectionRefusedError("nope")
         return Box()

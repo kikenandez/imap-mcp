@@ -9,7 +9,8 @@ all my accounts?" or "find the invoice from Hetzner" and get answers that span
 providers, not one inbox at a time.
 
 **Strictly read-only.** No send, no delete, no flag changes, no folder moves.
-Every fetch uses `BODY.PEEK`, so reading a message never marks it as read.
+Connections verify TLS certificates and hostnames. Folders open with read-only
+`EXAMINE`. Every fetch uses `BODY.PEEK`, so reading a message never marks it as read.
 Your mailboxes look exactly the same after a session as before it.
 
 **No secrets on disk.** The config file names an environment variable per
@@ -52,6 +53,7 @@ host = "imap.fastmail.com"
 port = 993                              # optional, defaults to 993
 password_env = "PERSONAL_IMAP_PASSWORD" # env var holding the password
 enabled = true                          # optional, defaults to true
+timeout_seconds = 30                    # positive socket timeout, per account
 ```
 
 Add one `[[account]]` block per mailbox. `enabled = false` keeps an account
@@ -164,10 +166,21 @@ and the other accounts still answer.
 uv run pytest
 ```
 
-31 tests, no network: the IMAP layer is faked. The suite locks in the
+Tests use no network: the IMAP layer is faked. The suite locks in the
 read-only contract (`mark_seen=False` on every fetch), per-account error
 isolation, and config handling.
 
 ## License
 
 MIT
+
+### Read behavior
+
+Account operations run concurrently with at most four workers. Socket operations
+time out after 30 seconds by default; this is not a whole-request deadline.
+List/search fetch only headers, in batches of 50, with a maximum of 100 rows per
+account. Snippets may be empty; use `get_email` for the body. HTML-only messages
+are converted to plain text. Cross-account dates are ordered in UTC.
+Search uses UTF-8, retrying with an ASCII-folded query if the server rejects it;
+this fallback can lose accent distinctions. Queries without an ASCII equivalent
+return an account error rather than an unfiltered search.

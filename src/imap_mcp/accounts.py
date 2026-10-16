@@ -4,6 +4,7 @@ secrets manager like 1Password's `op run`, whatever fits your setup)."""
 
 from __future__ import annotations
 
+import math
 import os
 import tomllib
 from dataclasses import dataclass
@@ -29,6 +30,11 @@ class Account:
     port: int
     password_env: str
     enabled: bool
+    timeout_seconds: float = 30
+
+    def __post_init__(self):
+        if not math.isfinite(self.timeout_seconds) or self.timeout_seconds <= 0:
+            raise ValueError("timeout_seconds must be a finite positive number")
 
     def password(self) -> str | None:
         """Password from the named env var, or None if unset/empty."""
@@ -56,6 +62,7 @@ def _load() -> dict[str, Account]:
             port=int(a.get("port", 993)),
             password_env=a["password_env"],
             enabled=bool(a.get("enabled", True)),
+            timeout_seconds=float(a.get("timeout_seconds", 30)),
         )
         out[acct.key] = acct
     return out

@@ -4,8 +4,10 @@ mailboxes and exposes list/get/search tools to an MCP client."""
 from __future__ import annotations
 
 import datetime as dt
+from concurrent.futures import ThreadPoolExecutor
 
 from mcp.server.mcpserver import MCPServer
+from mcp.types import ToolAnnotations
 
 from . import accounts as acct
 from . import imap
@@ -26,15 +28,15 @@ def _targets(account: str | None) -> list[acct.Account]:
     return acct.enabled_accounts()
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
 def list_accounts() -> list[dict]:
     """List configured mail accounts and whether each is reachable right now.
 
     Performs a live IMAP login per enabled account. Returns status so the caller
     knows which mailboxes are queryable.
     """
-    out = []
-    for a in acct.all_accounts():
+
+    def status(a):
         entry = {"account": a.key, "label": a.label, "email": a.email, "enabled": a.enabled}
         if not a.enabled:
             entry["status"] = "disabled"
@@ -44,13 +46,35 @@ def list_accounts() -> list[dict]:
             try:
                 with imap.open_box(a):
                     entry["status"] = "ok"
-            except Exception as e:  # noqa: BLE001 -- report, don't crash
+            except Exception as e:
                 entry["status"] = f"unreachable: {type(e).__name__}"
-        out.append(entry)
-    return out
+        return entry
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        return list(pool.map(status, acct.all_accounts()))
 
 
-@mcp.tool()
+def _date_key(row):
+    value = row.get("date")
+    if not value:
+        return dt.datetime.min.replace(tzinfo=dt.UTC)
+    date = dt.datetime.fromisoformat(value)
+    return date.replace(tzinfo=dt.UTC) if date.tzinfo is None else date.astimezone(dt.UTC)
+
+
+def _rows(account, **kwargs):
+    def fetch(a):
+        try:
+            return imap.fetch_rows(a, **kwargs)
+        except Exception as e:
+            return [{"account": a.key, "error": f"{type(e).__name__}: {e}"}]
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        rows = [row for group in pool.map(fetch, _targets(account)) for row in group]
+    return sorted(rows, key=_date_key, reverse=True)
+
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
 def list_emails(
     account: str | None = None,
     since: str | None = None,
@@ -65,17 +89,10 @@ def list_emails(
     limit: max rows (per account when merging).
     """
     since_d = _parse_since(since)
-    rows: list[dict] = []
-    for a in _targets(account):
-        try:
-            rows.extend(imap.fetch_rows(a, since=since_d, unread_only=unread_only, limit=limit))
-        except Exception as e:  # noqa: BLE001 -- per-account fail-safe
-            rows.append({"account": a.key, "error": f"{type(e).__name__}: {e}"})
-    rows.sort(key=lambda r: r.get("date") or "", reverse=True)
-    return rows
+    return _rows(account, since=since_d, unread_only=unread_only, limit=limit)
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
 def search_emails(
     query: str,
     account: str | None = None,
@@ -90,17 +107,10 @@ def search_emails(
     limit: max rows (per account when merging).
     """
     since_d = _parse_since(since)
-    rows: list[dict] = []
-    for a in _targets(account):
-        try:
-            rows.extend(imap.fetch_rows(a, query=query, since=since_d, limit=limit))
-        except Exception as e:  # noqa: BLE001
-            rows.append({"account": a.key, "error": f"{type(e).__name__}: {e}"})
-    rows.sort(key=lambda r: r.get("date") or "", reverse=True)
-    return rows
+    return _rows(account, query=query, since=since_d, limit=limit)
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
 def get_email(account: str, id: str) -> dict:
     """Fetch one full email (plain-text body preferred) by account + message id.
 

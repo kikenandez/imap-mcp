@@ -12,13 +12,20 @@ class FakeMailBox:
     instances = []
     messages = []
 
-    def __init__(self, host, port=993):
+    def __init__(self, host, port=993, ssl_context=None, timeout=None):
+        self.ssl_context = ssl_context
+        self.timeout = timeout
+        self.folder = SimpleNamespace(set=self.set_folder)
+        self.selections = []
         self.host = host
         self.port = port
         self.login_args = None
         self.fetch_kwargs = None
         self.logged_out = False
         FakeMailBox.instances.append(self)
+
+    def set_folder(self, name, readonly=False):
+        self.selections.append((name, readonly))
 
     def login(self, email, password, initial_folder="INBOX"):
         self.login_args = (email, password, initial_folder)
@@ -66,7 +73,7 @@ def test_open_box_requires_password(config):
 def test_open_box_logs_in_and_out(config, monkeypatch):
     monkeypatch.setenv("ALPHA_PW", "s3cret")
     with imap.open_box(accounts.get_account("alpha")) as box:
-        assert box.login_args == ("alpha@example.com", "s3cret", "INBOX")
+        assert box.login_args == ("alpha@example.com", "s3cret", None)
         assert (box.host, box.port) == ("imap.example.com", 1993)
         assert not box.logged_out
     assert box.logged_out
@@ -91,7 +98,7 @@ def test_snippet_collapses_newlines_and_truncates():
 
 def test_snippet_falls_back_to_html():
     msg = fake_msg(text="", html="<p>hi</p>")
-    assert imap._snippet(msg) == "<p>hi</p>"
+    assert imap._snippet(msg) == "hi"
 
 
 def test_row_shape():
@@ -173,3 +180,83 @@ def test_fetch_one_not_found(config, monkeypatch):
     monkeypatch.setenv("ALPHA_PW", "pw")
     FakeMailBox.messages = []
     assert imap.fetch_one(accounts.get_account("alpha"), "42") is None
+
+
+def test_verified_tls_timeout_and_examine(config, monkeypatch):
+    import ssl
+    from dataclasses import replace
+
+    monkeypatch.setenv("ALPHA_PW", "test-password")
+    account = replace(accounts.get_account("alpha"), timeout_seconds=7)
+    with imap.open_box(account) as box:
+        assert box.ssl_context.verify_mode == ssl.CERT_REQUIRED
+        assert box.ssl_context.check_hostname
+        assert box.timeout == 7
+        assert box.selections == [("INBOX", True)]
+
+
+def test_login_failure_closes_connection(config, monkeypatch):
+    monkeypatch.setenv("ALPHA_PW", "test-password")
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("login failed")
+
+    monkeypatch.setattr(FakeMailBox, "login", fail)
+    with (
+        pytest.raises(RuntimeError, match="login failed"),
+        imap.open_box(accounts.get_account("alpha")),
+    ):
+        pass
+    assert FakeMailBox.instances[-1].logged_out
+
+
+def test_disabled_never_connects(config):
+    with pytest.raises(ValueError, match="disabled"), imap.open_box(accounts.get_account("off")):
+        pass
+    assert not FakeMailBox.instances
+
+
+def test_header_fetch_limit(config, monkeypatch):
+    monkeypatch.setenv("ALPHA_PW", "test-password")
+    imap.fetch_rows(accounts.get_account("alpha"), limit=1000)
+    args = FakeMailBox.instances[-1].fetch_kwargs
+    assert args["limit"] == 100
+    assert args["headers_only"] is True
+    assert args["bulk"] == 50
+    assert args["charset"] == "UTF-8"
+    with pytest.raises(ValueError, match="positive"):
+        imap.fetch_rows(accounts.get_account("alpha"), limit=0)
+
+
+@pytest.mark.parametrize("query", ["café", "invoice", "東京"])
+def test_search_charset_fallback(config, monkeypatch, query):
+    import imaplib
+
+    monkeypatch.setenv("ALPHA_PW", "test-password")
+    calls = []
+
+    def fetch(self, criteria, **kwargs):
+        calls.append((str(criteria), kwargs))
+        if kwargs["charset"] == "UTF-8":
+            raise imaplib.IMAP4.error("BADCHARSET")
+        yield fake_msg()
+
+    monkeypatch.setattr(FakeMailBox, "fetch", fetch)
+    if query == "東京":
+        with pytest.raises(ValueError, match="no ASCII equivalent"):
+            imap.fetch_rows(accounts.get_account("alpha"), query=query)
+        assert len(calls) == 1
+    else:
+        assert imap.fetch_rows(accounts.get_account("alpha"), query=query)
+        assert len(calls) == 2
+        assert calls[1][1]["charset"] == "US-ASCII"
+        assert ("cafe" if query == "café" else query) in calls[1][0]
+
+
+def test_html_body_strips_hidden_content_and_decodes_entities():
+    assert (
+        imap.body_text(
+            fake_msg(text="", html="<style>x</style><p>A &amp; B</p><p>C</p><script>x</script>")
+        )
+        == "A & B\nC"
+    )

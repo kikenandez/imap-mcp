@@ -18,10 +18,11 @@ from imap_tools import AND, OR, MailBox
 from imap_tools.errors import MailboxUidsError
 
 from .accounts import Account
+from .folders import folder_rows, resolve_folder
 
 
 @contextmanager
-def open_box(account: Account) -> Iterator[MailBox]:
+def open_box(account: Account, folder: str | None = None) -> Iterator[MailBox]:
     """Yield a logged-in, read-only mailbox for the account. Raises on failure."""
     if not account.enabled:
         raise ValueError(f"account {account.key!r} is disabled")
@@ -39,7 +40,7 @@ def open_box(account: Account) -> Iterator[MailBox]:
     )
     try:
         box.login(account.email, pw, initial_folder=None)
-        box.folder.set("INBOX", readonly=True)
+        box.folder.set(resolve_folder(box, account, folder), readonly=True)
         yield box
     finally:
         with suppress(Exception):
@@ -115,15 +116,16 @@ def fetch_rows(
     since: dt.date | None = None,
     unread_only: bool = False,
     limit: int = 25,
+    folder: str | None = None,
 ) -> list[dict]:
     if limit < 1:
         raise ValueError("limit must be positive")
     limit = min(limit, 100)
-    with open_box(account) as box:
+    with open_box(account, folder) as box:
 
         def fetch(text, charset):
             return [
-                row(m, account.key)
+                {**row(m, account.key), "folder": box.folder.get()}
                 for m in box.fetch(
                     _criteria(text, since, unread_only),
                     charset=charset,
@@ -146,9 +148,9 @@ def fetch_rows(
             return fetch(folded, "US-ASCII")
 
 
-def fetch_one(account: Account, uid: str) -> dict | None:
-    """Full message by UID (INBOX). Returns None if not found."""
-    with open_box(account) as box:
+def fetch_one(account: Account, uid: str, folder: str | None = None) -> dict | None:
+    """Full message by UID in a folder (default INBOX). Returns None if not found."""
+    with open_box(account, folder) as box:
         msgs = list(box.fetch(AND(uid=uid), mark_seen=False, bulk=False))
         if not msgs:
             return None
@@ -156,6 +158,7 @@ def fetch_one(account: Account, uid: str) -> dict | None:
         return {
             "account": account.key,
             "id": m.uid,
+            "folder": box.folder.get(),
             "from": m.from_,
             "to": list(m.to),
             "cc": list(m.cc),
@@ -165,3 +168,8 @@ def fetch_one(account: Account, uid: str) -> dict | None:
             "message_id": m.headers.get("message-id", [None])[0],
             "body": body_text(m),
         }
+
+
+def list_folders(account: Account) -> list[dict]:
+    with open_box(account) as box:
+        return folder_rows(box, account)

@@ -73,3 +73,17 @@ def test_timeout_config(config):
     config.write_text(config.read_text().replace("port = 1993", "port = 1993\ntimeout_seconds = 8"))
     assert accounts.get_account("alpha").timeout_seconds == 8
     assert accounts.get_account("gmailish").timeout_seconds == 30
+
+
+def test_folder_config(config):
+    config.write_text(config.read_text() + '\n[account.folders]\ndrafts = "Custom"\n')
+    assert accounts.get_account("off").folders == {"drafts": "Custom"}
+    assert accounts.get_account("alpha").folders == {}
+
+
+@pytest.mark.parametrize("folders", [{"unknown": "X"}, {"drafts": ""}, {"drafts": 1}])
+def test_invalid_folder_config(config, folders):
+    from dataclasses import replace
+
+    with pytest.raises(ValueError, match="folders"):
+        replace(accounts.get_account("alpha"), folders=folders)

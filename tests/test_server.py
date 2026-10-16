@@ -171,4 +171,7 @@ def test_accounts_run_concurrently(config, monkeypatch, operation):
 def test_read_only_annotations():
     import asyncio
 
-    assert all(t.annotations.model_dump(by_alias=True)["readOnlyHint"] for t in asyncio.run(server.mcp.list_tools()))
+    assert all(
+        t.annotations.model_dump(by_alias=True)["readOnlyHint"]
+        for t in asyncio.run(server.mcp.list_tools())
+    )

@@ -1,9 +1,10 @@
 [project]
 name = "imap-mcp"
 version = "0.1.0"
-description = "Read-only MCP server for searching and reading mail across multiple IMAP accounts"
+description = "MCP server for reading mail across IMAP accounts and creating opt-in drafts"
 readme = "README.md"
 license = "MIT"
+license-files = ["LICENSE", "licenses/*.txt"]
 authors = [
     { name = "Lee Flannery" }
 ]
@@ -22,8 +23,8 @@ dependencies = [
 ]
 
 [project.urls]
-Repository = "https://github.com/LeeFlannery/imap-mcp"
-Issues = "https://github.com/LeeFlannery/imap-mcp/issues"
+Repository = "https://github.com/kikenandez/imap-mcp"
+Issues = "https://github.com/kikenandez/imap-mcp/issues"
 
 [project.scripts]
 imap-mcp = "imap_mcp:main"

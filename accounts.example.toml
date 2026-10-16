@@ -14,6 +14,13 @@ host = "imap.fastmail.com"
 port = 993
 password_env = "PERSONAL_IMAP_PASSWORD"
 enabled = true
+timeout_seconds = 30                  # finite positive socket timeout
+allow_drafts = false                  # set true to permit draft creation only
+# from_name = "Your name"               # optional display name for draft From
+
+# Optional fallback for an existing folder with an unusual name:
+# [account.folders]
+# drafts = "My compositions"
 
 # Gmail / Google Workspace: with 2FA on, the account password is rejected for
 # IMAP. Generate an app password at https://myaccount.google.com/apppasswords

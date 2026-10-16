@@ -130,7 +130,14 @@ def test_all_tools_registered():
     import asyncio
 
     tools = {t.name for t in asyncio.run(server.mcp.list_tools())}
-    assert tools == {"list_accounts", "list_emails", "search_emails", "get_email", "list_folders"}
+    assert tools == {
+        "list_accounts",
+        "list_emails",
+        "search_emails",
+        "get_email",
+        "list_folders",
+        "create_draft",
+    }
 
 
 def test_dates_sort_by_instant(config, monkeypatch):
@@ -179,6 +186,7 @@ def test_read_only_annotations():
     assert all(
         t.annotations.model_dump(by_alias=True)["readOnlyHint"]
         for t in asyncio.run(server.mcp.list_tools())
+        if t.name != "create_draft"
     )
 
 
@@ -190,3 +198,24 @@ def test_folder_tools_forward_arguments(config, monkeypatch):
     assert server.get_email("alpha", "42", folder="sent")["error"] == "not found in sent"
     monkeypatch.setattr(imap, "list_folders", lambda a: [{"account": a.key}])
     assert server.list_folders("alpha") == [{"account": "alpha"}]
+
+
+def test_draft_tool_and_annotations(config, monkeypatch):
+    import asyncio
+
+    seen = {}
+
+    def create(account, to, subject, body, **kwargs):
+        seen.update(account=account.key, to=to, subject=subject, body=body, **kwargs)
+        return {"uid": "123"}
+
+    monkeypatch.setattr(imap, "create_draft", create)
+    assert server.create_draft("alpha", [], "Hi", "Reply", reply_to_uid="42", reply_all=True) == {
+        "uid": "123"
+    }
+    assert seen["account"] == "alpha" and seen["reply_to_uid"] == "42" and seen["reply_all"]
+    tool = next(t for t in asyncio.run(server.mcp.list_tools()) if t.name == "create_draft")
+    annotations = tool.annotations.model_dump(by_alias=True)
+    assert annotations["readOnlyHint"] is False
+    assert annotations["destructiveHint"] is False
+    assert annotations["idempotentHint"] is False

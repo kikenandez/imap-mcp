@@ -32,8 +32,14 @@ class Account:
     enabled: bool
     timeout_seconds: float = 30
     folders: dict[str, str] = field(default_factory=dict)
+    allow_drafts: bool = False
+    from_name: str | None = None
 
     def __post_init__(self):
+        if type(self.allow_drafts) is not bool or type(self.enabled) is not bool:
+            raise ValueError("allow_drafts and enabled must be TOML booleans")
+        if self.from_name is not None and not isinstance(self.from_name, str):
+            raise ValueError("from_name must be a string")
         if not math.isfinite(self.timeout_seconds) or self.timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be a finite positive number")
         roles = {"inbox", "sent", "drafts", "junk", "trash", "archive"}
@@ -68,9 +74,11 @@ def _load() -> dict[str, Account]:
             host=a["host"],
             port=int(a.get("port", 993)),
             password_env=a["password_env"],
-            enabled=bool(a.get("enabled", True)),
+            enabled=a.get("enabled", True),
             timeout_seconds=float(a.get("timeout_seconds", 30)),
             folders=a.get("folders", {}),
+            allow_drafts=a.get("allow_drafts", False),
+            from_name=a.get("from_name"),
         )
         out[acct.key] = acct
     return out

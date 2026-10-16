@@ -39,3 +39,16 @@ def config(tmp_path, monkeypatch):
     accounts._load.cache_clear()
     yield path
     accounts._load.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def no_network(monkeypatch):
+    """Fail immediately if an offline test accidentally attempts a real connection."""
+    import socket
+
+    def blocked(*args, **kwargs):
+        raise AssertionError("network access is forbidden in tests; use the IMAP fakes")
+
+    monkeypatch.setattr(socket, "create_connection", blocked)
+    monkeypatch.setattr(socket.socket, "connect", blocked)
+    monkeypatch.setattr(socket.socket, "connect_ex", blocked)

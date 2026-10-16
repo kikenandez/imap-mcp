@@ -22,3 +22,5 @@ creds/
 
 # Personal notes/scripts
 .local/
+.DS_Store
+accounts.toml

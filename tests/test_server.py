@@ -126,3 +126,52 @@ def test_all_tools_registered():
 
     tools = {t.name for t in asyncio.run(server.mcp.list_tools())}
     assert tools == {"list_accounts", "list_emails", "search_emails", "get_email"}
+
+
+def test_dates_sort_by_instant(config, monkeypatch):
+    monkeypatch.setattr(
+        imap,
+        "fetch_rows",
+        lambda a, **kw: [
+            {"date": "2026-07-01T12:00:00+04:00", "id": "earlier"},
+            {"date": "2026-07-01T10:00:00+00:00", "id": "later"},
+        ],
+    )
+    assert [r["id"] for r in server.list_emails(account="alpha")] == ["later", "earlier"]
+
+
+@pytest.mark.parametrize("operation", ["list", "search", "accounts"])
+def test_accounts_run_concurrently(config, monkeypatch, operation):
+    from contextlib import contextmanager
+    from threading import Barrier
+
+    barrier = Barrier(2, timeout=3)
+
+    def fetch(*args, **kwargs):
+        barrier.wait()
+        return []
+
+    @contextmanager
+    def open_box(a):
+        barrier.wait()
+        yield
+
+    monkeypatch.setenv("ALPHA_PW", "test-password")
+    monkeypatch.setenv("BETA_PW", "test-password")
+    monkeypatch.setattr(imap, "fetch_rows", fetch)
+    monkeypatch.setattr(imap, "open_box", open_box)
+    if operation == "accounts":
+        assert [r["status"] for r in server.list_accounts()] == ["ok", "ok", "disabled"]
+    elif operation == "search":
+        assert server.search_emails("café") == []
+    else:
+        assert server.list_emails() == []
+
+
+def test_read_only_annotations():
+    import asyncio
+
+    assert all(
+        t.annotations.model_dump(by_alias=True)["readOnlyHint"]
+        for t in asyncio.run(server.mcp.list_tools())
+    )

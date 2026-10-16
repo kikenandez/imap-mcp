@@ -59,3 +59,17 @@ def test_example_config_is_loadable(monkeypatch):
         assert all(a.password_env for a in accts)
     finally:
         accounts._load.cache_clear()
+
+
+@pytest.mark.parametrize("timeout", [0, -1, float("inf"), float("nan")])
+def test_invalid_timeout(config, timeout):
+    from dataclasses import replace
+
+    with pytest.raises(ValueError, match="timeout_seconds"):
+        replace(accounts.get_account("alpha"), timeout_seconds=timeout)
+
+
+def test_timeout_config(config):
+    config.write_text(config.read_text().replace("port = 1993", "port = 1993\ntimeout_seconds = 8"))
+    assert accounts.get_account("alpha").timeout_seconds == 8
+    assert accounts.get_account("gmailish").timeout_seconds == 30

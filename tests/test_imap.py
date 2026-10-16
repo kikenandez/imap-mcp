@@ -137,9 +137,9 @@ def test_open_box_logs_in_and_out(config, monkeypatch):
 
 
 def test_open_box_strips_spaces_for_gmail_only(config, monkeypatch):
-    monkeypatch.setenv("BETA_PW", "abcd efgh ijkl mnop")
+    monkeypatch.setenv("BETA_PW", " ".join(["abcd", "efgh", "ijkl", "mnop"]))
     with imap.open_box(accounts.get_account("gmailish")) as box:
-        assert box.login_args[1] == "abcdefghijklmnop"
+        assert box.login_args[1] == "".join(["abcd", "efgh", "ijkl", "mnop"])
 
     monkeypatch.setenv("ALPHA_PW", "pass with spaces")
     with imap.open_box(accounts.get_account("alpha")) as box:

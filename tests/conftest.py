@@ -43,7 +43,7 @@ def config(tmp_path, monkeypatch):
 
 @pytest.fixture(autouse=True)
 def no_network(monkeypatch):
-    """Fail immediately if an offline test accidentally attempts a real connection."""
+    """Reject any real connection attempt during offline tests."""
     import socket
 
     def blocked(*args, **kwargs):
@@ -52,3 +52,20 @@ def no_network(monkeypatch):
     monkeypatch.setattr(socket, "create_connection", blocked)
     monkeypatch.setattr(socket.socket, "connect", blocked)
     monkeypatch.setattr(socket.socket, "connect_ex", blocked)
+
+
+@pytest.fixture(autouse=True)
+def no_real_keychain(monkeypatch):
+    """A forgotten fake must fail before accessing the user's credential store."""
+    import subprocess
+    from pathlib import Path
+
+    original = subprocess.run
+
+    def guarded(args, *positional, **kwargs):
+        command = args if isinstance(args, str) else str(args[0])
+        if "security" in command or Path(command).name == "secret-tool":
+            raise AssertionError("real credential backends are forbidden in tests")
+        return original(args, *positional, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", guarded)

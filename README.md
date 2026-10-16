@@ -22,7 +22,7 @@ to a plaintext credential file. A `password` field in TOML is rejected.
 
 ## Why IMAP
 
-Assistant mail integrations usually connect one Gmail or one Outlook account.
+Assistant mail connections usually connect one Gmail or one Outlook account.
 IMAP is the protocol nearly every provider already speaks, so one small server
 covers your whole mail footprint with a single read-only code path, no OAuth
 apps to register for password-based accounts.
@@ -69,7 +69,7 @@ to keep the config outside the repo.
 |----------|------|----------|
 | Gmail / Google Workspace | `imap.gmail.com` | [App password](https://myaccount.google.com/apppasswords) (requires 2FA; the spaces Google shows are stripped automatically) |
 | Fastmail | `imap.fastmail.com` | [App password](https://www.fastmail.help/hc/en-us/articles/360058752854) |
-| iCloud | `imap.mail.me.com` | [App-specific password](https://support.apple.com/102654) |
+| iCloud | `imap.mail.me.com` | [App password](https://support.apple.com/102654) |
 | AOL | `imap.aol.com:993` | [App password](https://help.aol.com/articles/create-and-manage-app-password); see [AOL settings](https://help.aol.com/articles/how-do-i-use-other-email-applications-to-send-and-receive-my-aol-mail) |
 | Yahoo | `imap.mail.yahoo.com:993` | [App password and settings](https://help.yahoo.com/kb/SLN4075.html); Drafts may be named `Draft` (unverified on live accounts) |
 | OVH MX Plan | Host shown in OVH Manager, often `ssl0.ovh.net:993` in Europe | Mailbox password; some installations may use an `INBOX.` hierarchy (unverified); inspect with `doctor` |
@@ -77,7 +77,7 @@ to keep the config outside the repo.
 | Migadu | `imap.migadu.com` | Mailbox password |
 | Outlook.com / Microsoft 365 | not supported | Microsoft has retired IMAP basic auth; OAuth is not implemented here |
 
-Port 993 (implicit TLS) is the default. Use the exact host from your provider's
+Port 993 (implicit TLS) is the default. Use the exact host shown in the mail provider's
 account settings. OVH hostnames vary by infrastructure and region; its
 [MX Plan configuration guide](https://help.ovhcloud.com/csm/pl-mx-plan-thunderbird-macos-configuration?id=kb_article_view&sysparm_article=KB0052133)
 lists `ssl0.ovh.net` / `imap.mail.ovh.net` for Europe and `imap.mail.ovh.ca`
@@ -88,7 +88,7 @@ No live AOL, Yahoo, OVH MX Plan or OVH Zimbra account has been tested for this
 release. Folder names, SPECIAL-USE flags and native UTF-8 support remain
 unverified per provider. Use `doctor` to inspect your own account.
 
-### Password references
+### Secrets: password references
 
 Only these reference schemes are supported:
 
@@ -99,20 +99,33 @@ password_ref = "env:IMAP_EXAMPLE_PASSWORD"
 ```
 
 For `env:`, the named variable must be available in the server process environment.
-For `keychain:`, the generic-password item uses **service `pkma-mail-<key>`** and
-**account `pkma`**. This exact naming lets a provisioning helper and the server
-find the same item. The helper stores the item; the server only reads it using
+For `keychain:`, the generic-password item has **service `pkma-mail-<key>`** and
+**account `pkma`**. This convention is fixed on purpose and shared with the PKMA
+assistant's provisioning helper. The helper stores the item; the server reads it using
 `/usr/bin/security find-generic-password`. No real secret needs to be passed to an
-assistant. Keychain references require macOS; use `env:` on other platforms.
+assistant. Keychain references require macOS; Linux and Windows use `env:`.
 
 Both sources are resolved inside the server at each connection, never during
 configuration loading, and secret values are never cached or included in errors.
-A missing item is reported as `no-credential`; a denied or failed Keychain lookup
-is reported as unavailable. There is no fallback to another secret source.
+A missing, denied or failed lookup is reported as `no-credential: <ref>`.
+Authentication errors name the reference without echoing the server response.
+There is no fallback to another secret source.
+
+**Threat model.** Credential resolution happens inside the server process; on macOS
+it invokes `/usr/bin/security` with an argument list and no shell, reading the value
+from stdout only. Any process running as the same user with permission to read that
+Keychain item through `security` can obtain it too; this is not protection against a
+compromised local user session. The server never stores the value on an account,
+caches, logs or returns it: it keeps a local variable for authentication and discards
+it afterward. Authentication errors and Keychain failures omit backend output, and
+IMAP protocol debug logging is disabled before login. Tests use a synthetic canary
+through both backends, all six tools (including MCP serialization), and `doctor`;
+they never access a real Keychain or mailbox. These tests cover the specified paths,
+not a guarantee against arbitrary code executing inside the server process.
 
 The legacy `password_env = "VARIABLE_NAME"` remains supported as an alias for
 `password_ref = "env:VARIABLE_NAME"`. Do not specify both. Plaintext `password`
-fields, including on disabled accounts, are forbidden. `file:`, `op:`, executable
+fields, including on accounts that are disabled, are forbidden. `file:`, `op:`, executable
 references and other schemes are rejected. You may still inject environment
 variables externally with your secret manager:
 
@@ -153,7 +166,7 @@ in your secret injector, e.g. `"command": "op"`,
 
 ## Tools
 
-**`list_accounts()`** configured accounts with live status. Run this first;
+**`list_accounts()`** configured accounts and their live status. Run this first;
 it tells you which mailboxes are queryable and what to pass as `account`.
 
 ```json
@@ -185,12 +198,12 @@ and the other accounts still answer.
 
 ## Troubleshooting
 
-- **`status: "no-credential"`**: the referenced environment variable is unset/empty
-  or the Keychain item is missing. Remember the server inherits its env from
-  whatever launched it (your MCP client), not from your interactive shell.
-- **`status: "unreachable: MailboxLoginError"`** on Gmail/iCloud/Yahoo: you're
-  using the account password; these providers require an app password (see
-  cheat sheet).
+- **`status: "no-credential: <ref>"`**: the referenced environment variable is unset/empty
+  or the Keychain lookup failed. Remember the server inherits its env from
+  the process that launched it (your MCP client), not from your interactive shell.
+- **`status: "unreachable: RuntimeError"`** can indicate authentication failure.
+  `doctor` reports a safe error naming the credential reference. Check the account
+  settings; Gmail/iCloud/Yahoo require an app password (see cheat sheet).
 - **Config not found**: the server looks for `accounts.toml` next to
   `pyproject.toml`, or wherever `IMAP_MCP_ACCOUNTS` points.
 
@@ -212,12 +225,12 @@ MIT
 
 ### Read behavior
 
-Account operations run concurrently with at most four workers. Socket operations
+Account operations use at most four concurrent workers. Socket operations
 time out after 30 seconds by default; this is not a whole-request deadline.
 List/search fetch only headers, in batches of 50, with a maximum of 100 rows per
 account. Snippets may be empty; use `get_email` for the body. HTML-only messages
 are converted to plain text. Cross-account dates are ordered in UTC.
-Search uses UTF-8. After a search error, it retries in ASCII only when removing
+Search uses UTF-8. After a search error, it retries in ASCII only if removing
 accents produces a nonempty, entirely ASCII query. This fallback can lose accent
 distinctions. Empty queries, ASCII-only queries and other Unicode queries
 preserve the original error without retrying.
@@ -287,7 +300,7 @@ mail client before sending.
 ### Diagnose an account
 
 ```sh
-uv run --locked imap-mcp doctor              # all accounts; disabled accounts are skipped
+uv run --locked imap-mcp doctor              # all accounts; accounts that are disabled are skipped
 uv run --locked imap-mcp doctor personal     # one account, read-only
 uv run --locked imap-mcp doctor personal --test-draft
 ```
@@ -298,7 +311,7 @@ socket, socket timeout, and a UTF-8 search for `café`. The `tls` field is null
 when connection details are unavailable (including login failures and disabled
 accounts). It fetches
 at most one message's headers and prints no message content. The diagnostic
-search deliberately does not use ASCII fallback, so rejection identifies a
+search intentionally does not use ASCII fallback, so rejection identifies a
 server limitation even if the normal read tools work with folded queries.
 It exits 0 when checks succeed (or accounts are disabled), 1 on a check/config
 error, and 2 on invalid command-line arguments.
@@ -312,7 +325,7 @@ writes to a mailbox.
 
 For manual provider validation, run the read-only command first, inspect folder
 roles and UTF-8 results, then use an opted-in account for the explicit draft
-check. Verify the draft in your mail client and check that existing messages'
+check. Verify the draft in your mail client and check that stored messages'
 unread states are unchanged. No credentials are needed for the automated tests.
 
 ### Roadmap
@@ -329,8 +342,13 @@ reports the limit. Reply drafts use the same bounded quote and explicitly mark
 truncated originals. Plain text is preferred; HTML-only messages discard hidden
 subtrees (`hidden`, `aria-hidden`, common inline display/visibility/opacity/zero
 font-size rules) and non-content elements such as scripts, styles and templates.
-This is a conservative text converter, not a browser or a full CSS renderer;
-stylesheet selectors, external CSS and visual layout are not evaluated.
+This is a limited text converter, not a browser or a full CSS renderer;
+stylesheet selectors, external CSS and general visual layout are not evaluated.
+Inline equal foreground/background colors (including nearest ancestor backgrounds),
+transparent colors, zero-size clipped boxes and common off-screen positions are
+removed too. This reduces hidden-text injection carriers, but visible message text
+can still contain malicious instructions. Treat all mail content as untrusted data;
+HTML filtering is not a prompt-injection security barrier.
 
 Full-message reads and reply-body reads request at most **5 MiB** through a
 partial `BODY.PEEK[]` fetch, including MIME headers and attachments. Larger
@@ -353,3 +371,17 @@ Commit only generic code, documentation and synthetic fixtures using reserved
 example domains. Keep real account details, client names/domains, credentials,
 integration briefs, mail samples and diagnostic/test-output files outside this
 public repository. See `AGENTS.md` for contributor rules.
+
+## Public repository hygiene
+
+CI checks the Git index with `uv run --locked python scripts/check_public_hygiene.py`.
+It rejects non-example email addresses, app-password-shaped literals in docs,
+configuration and Python tests, and tracked `accounts.toml`, mail captures or
+`docs/integration/` files. It reports file/line and rule only, never matching content.
+The allowed address domains are `example.com`, `example.org` and
+`users.noreply.github.com`; upstream author attribution is read from `LICENSE` and
+`pyproject.toml` and allowed only in those files. An educational password-shaped
+example may be exempted only inside a Markdown code fence immediately preceded by
+`<!-- hygiene: allow -->`. This marker never exempts addresses or forbidden paths.
+The scanner is a heuristic, not a credential detector for every format: review the
+staged diff before publishing, and keep private data and real test output local.

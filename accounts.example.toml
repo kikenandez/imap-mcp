@@ -1,13 +1,13 @@
 # Synthetic example only. Copy to gitignored accounts.toml and edit locally.
 # Never commit actual addresses, client domains or credentials.
 # Only env: and macOS keychain: password references are accepted.
-# A plaintext password field is forbidden, including on disabled accounts.
+# A plaintext password field is forbidden, including on accounts that are disabled.
 
 [[account]]
 key = "example"
 label = "Example account"
 email = "user@example.com"
-host = "imap.example.com"              # replace locally with your provider's host
+host = "imap.example.com"              # replace locally with the mail service's host
 port = 993
 password_ref = "env:IMAP_EXAMPLE_PASSWORD"
 # macOS alternative (replace the line above):

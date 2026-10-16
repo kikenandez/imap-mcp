@@ -61,7 +61,7 @@ def test_keychain_naming_and_no_secret_cache(config, monkeypatch):
     assert len(calls) == 2
     assert calls[0] == (
         ["/usr/bin/security", "find-generic-password", "-s", "pkma-mail-alpha", "-a", "pkma", "-w"],
-        {"capture_output": True, "text": True, "timeout": 5, "check": False},
+        {"capture_output": True, "shell": False, "text": True, "timeout": 5, "check": False},
     )
 
 

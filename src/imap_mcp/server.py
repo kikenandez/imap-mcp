@@ -12,7 +12,7 @@ from . import accounts as acct
 from . import imap
 from .credentials import MissingCredentialError
 
-mcp = MCPServer("imap-mcp", version="0.3.0")
+mcp = MCPServer("imap-mcp", version="0.3.1")
 
 
 def _parse_since(since: str | None) -> dt.date | None:
@@ -51,7 +51,7 @@ def list_accounts() -> list[dict]:
                 with imap.open_box(a):
                     entry["status"] = "ok"
             except MissingCredentialError:
-                entry["status"] = "no-credential"
+                entry["status"] = f"no-credential: {a.credential_ref}"
             except Exception as e:
                 entry["status"] = f"unreachable: {type(e).__name__}"
         return entry

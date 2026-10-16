@@ -32,7 +32,7 @@ def open_box(account: Account, folder: str | None = None) -> Iterator[MailBox]:
         raise ValueError(f"account {account.key!r} is disabled")
     pw = account.password()
     if not pw:
-        raise MissingCredentialError(f"no password for {account.key} ({account.credential_ref})")
+        raise MissingCredentialError(f"no-credential: {account.credential_ref}")
     # Google shows app passwords with spaces for readability; IMAP wants them bare.
     if account.host.endswith("gmail.com"):
         pw = pw.replace(" ", "")
@@ -43,7 +43,20 @@ def open_box(account: Account, folder: str | None = None) -> Iterator[MailBox]:
         timeout=account.timeout_seconds,
     )
     try:
-        box.login(account.email, pw, initial_folder=None)
+        # imaplib debug output and its rolling command log can contain LOGIN credentials.
+        box.client.debug = 0
+        authenticated = False
+        try:
+            box.login(account.email, pw, initial_folder=None)
+            authenticated = True
+        except Exception:
+            pass  # Authentication responses may echo credentials; never propagate them.
+        finally:
+            del pw
+            if hasattr(box.client, "_cmd_log"):
+                box.client._cmd_log.clear()
+        if not authenticated:
+            raise RuntimeError(f"IMAP login failed ({account.credential_ref})")
         box.folder.set(resolve_folder(box, account, folder), readonly=True)
         yield box
     finally:

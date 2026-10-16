@@ -48,7 +48,7 @@ def test_list_accounts_statuses(config, monkeypatch):
 
     monkeypatch.delenv("ALPHA_PW")
     status = {e["account"]: e["status"] for e in server.list_accounts()}
-    assert status["alpha"] == "no-credential"
+    assert status["alpha"] == "no-credential: env:ALPHA_PW"
 
 
 def test_list_emails_merges_and_sorts(config, monkeypatch):

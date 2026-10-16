@@ -5,7 +5,7 @@ Upstream: https://github.com/LeeFlannery/imap-mcp (MIT, Python ≥3.12, uv, imap
 Fork: `kikenandez/imap-mcp`. Keep the upstream MIT LICENSE and copyright line.
 
 ## Target
-A local stdio MCP server that reads mail across several IMAP accounts (AOL, Yahoo, OVH MX Plan, OVH Zimbra), can create **drafts only** on accounts that opt in, never sends, never deletes, never changes flags on existing messages. Microsoft 365 via OAuth2 later (phase 4).
+A local stdio MCP server that reads mail across several IMAP accounts (AOL, Yahoo, OVH MX Plan, OVH Zimbra), can create **drafts only** on accounts that opt in, never sends, never deletes, never changes flags on stored messages. Microsoft 365 via OAuth2 later (phase 4).
 
 ## Ground rules
 - Every change keeps `uv run --locked pytest`, `ruff check`, `ruff format --check` green. Add tests for every behaviour you add or fix. No real network in tests: extend the existing fakes (`tests/test_imap.py` `FakeMailBox`, `tests/test_server.py` monkeypatches).
@@ -20,7 +20,7 @@ A local stdio MCP server that reads mail across several IMAP accounts (AOL, Yaho
 Audited issues in upstream, file refs are upstream `src/imap_mcp/`:
 
 1. **TLS certificates not verified** — `imap.py:27` `MailBox(host, port=port)` → imaplib falls back to an unverified context (CERT_NONE, no hostname check).
-   Fix: `MailBox(host, port=port, ssl_context=ssl.create_default_context(), timeout=30)`. Add optional per-account `tls_verify = true` (default true) only if strictly needed; default must stay verified. Test that `MailBox` receives a verifying context.
+   Fix: `MailBox(host, port=port, ssl_context=ssl.create_default_context(), timeout=30)`. Add optional per-account `tls_verify = true` (default true) only if strictly needed; default must remain verified. Test that `MailBox` receives a verifying context.
 2. **No socket timeout** — add `timeout` (default 30 s, per-account override `timeout_seconds`). `list_accounts` logs in serially; run the per-account work with a small `ThreadPoolExecutor` so one dead host doesn't stall the rest. Same for `list_emails`/`search_emails` merges.
 3. **Non-ASCII search crashes** (`UnicodeEncodeError`, e.g. "café") — pass `charset="UTF-8"` to `box.fetch(...)` in `fetch_rows`. If a server rejects UTF-8 SEARCH, catch and retry with ASCII-folded query; return a per-account error row rather than raising.
 4. **Read path uses SELECT** (`initial_folder="INBOX"` → read-write select). Switch to `login(..., initial_folder=None)` then `box.folder.set(folder, readonly=True)` (EXAMINE). Update `test_open_box_logs_in_and_out`.
@@ -51,7 +51,7 @@ Tool `create_draft(account, to, subject, body, cc=None, html_body=None, reply_to
   - `In-Reply-To` = original Message-ID; `References` = (orig References or orig In-Reply-To) + " " + orig Message-ID.
   - Subject: keep if it already matches `^(re|aw|antw|rv|réf)\s*:` (case-insensitive), else prefix `Re: `.
   - If `to` empty: Reply-To else From; `reply_all` adds original To+Cc minus own address.
-  - Quote original text body below with `> ` and a header line `On <date>, <from> wrote:`.
+  - Quote body of the original mail below with `> ` and a header line `On <date>, <from> wrote:`.
   - Logic reference (TypeScript, read only): unikinCK/mcp-imap `src/reply.ts`, `src/tools/write.ts:160-180, 488-517, 612-732`.
 - Drafts folder: role `drafts` via phase-1 resolver; fallback names `Drafts, Draft, Brouillons, Borradores, Entwürfe, Bozze`. If none found → clear error. **Never create folders.**
 - `box.append(raw_bytes, folder, flag_set=[MailMessageFlags.DRAFT, MailMessageFlags.SEEN])`. INBOX stays EXAMINEd; APPEND doesn't need a selected folder. Parse `APPENDUID <validity> <uid>` from the response when present.

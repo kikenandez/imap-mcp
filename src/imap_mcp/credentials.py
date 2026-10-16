@@ -7,7 +7,7 @@ import sys
 
 
 class MissingCredentialError(RuntimeError):
-    """The configured secret source has no password."""
+    """The configured secret source is missing or unavailable."""
 
 
 def validate_reference(reference: str, key: str) -> None:
@@ -30,21 +30,25 @@ def resolve_password(reference: str, key: str) -> str | None:
     if reference.startswith("env:"):
         return os.environ.get(reference[4:]) or None
     if sys.platform != "darwin":
-        raise RuntimeError("keychain: requires macOS; use env: on this platform")
+        raise MissingCredentialError(f"no-credential: {reference} (requires macOS)")
     service, account = reference[len("keychain:") :].split("/")
     try:
         result = subprocess.run(
             ["/usr/bin/security", "find-generic-password", "-s", service, "-a", account, "-w"],
             capture_output=True,
+            shell=False,
             text=True,
             timeout=5,
             check=False,
         )
     except (OSError, subprocess.SubprocessError, UnicodeError):
-        raise RuntimeError("unable to read the configured Keychain item") from None
+        # Raise outside the handler so even the exception context has no backend output.
+        result = None
+    if result is None:
+        raise MissingCredentialError(f"no-credential: {reference}")
     if result.returncode == 44:  # errSecItemNotFound
         return None
     if result.returncode != 0:
         # stderr/stdout can contain sensitive data. Never include them in errors.
-        raise RuntimeError("unable to read the configured Keychain item")
+        raise MissingCredentialError(f"no-credential: {reference}")
     return result.stdout.removesuffix("\n") or None

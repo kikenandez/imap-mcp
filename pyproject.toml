@@ -1,6 +1,6 @@
 [project]
 name = "imap-mcp"
-version = "0.3.0"
+version = "0.3.1"
 description = "MCP server for reading mail across IMAP accounts and creating opt-in drafts"
 readme = "README.md"
 license = "MIT"

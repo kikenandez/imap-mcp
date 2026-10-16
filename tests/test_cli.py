@@ -12,6 +12,12 @@ def diagnostics(config, monkeypatch):
     calls = []
 
     class Box:
+        client = SimpleNamespace(
+            sock=SimpleNamespace(
+                version=lambda: "TLSv1.3",
+                cipher=lambda: ("TLS_AES_256_GCM_SHA384", "TLSv1.3", 256),
+            )
+        )
         folder = SimpleNamespace(
             list=lambda: [
                 SimpleNamespace(name="Draft", delim="/", flags=("\\Drafts",)),
@@ -43,7 +49,12 @@ def test_doctor_reads_only_and_shows_status(diagnostics, capsys):
     results = json.loads(capsys.readouterr().out)
     assert [r["status"] for r in results] == ["ok", "ok", "disabled"]
     assert results[0]["folders"][0]["role"] == "drafts"
-    assert "verification required" in results[0]["tls"]
+    assert results[0]["tls"] == {
+        "version": "TLSv1.3",
+        "cipher": "TLS_AES_256_GCM_SHA384",
+        "secret_bits": 256,
+    }
+    assert results[2]["tls"] is None
     assert results[0]["timeout_seconds"] == 30
     assert "no ASCII fallback" in results[0]["utf8_search"]
     assert [call for call in diagnostics if call[0] == "login"] == [
@@ -87,7 +98,9 @@ def test_doctor_error_isolation(diagnostics, monkeypatch, capsys):
 
     monkeypatch.setattr(imap, "open_box", open_box)
     assert cli.doctor() == 1
-    assert [r["status"] for r in json.loads(capsys.readouterr().out)] == ["error", "ok", "disabled"]
+    results = json.loads(capsys.readouterr().out)
+    assert [r["status"] for r in results] == ["error", "ok", "disabled"]
+    assert results[0]["tls"] is None
 
 
 def test_doctor_utf8_rejection_is_visible(diagnostics, monkeypatch, capsys):
@@ -96,9 +109,13 @@ def test_doctor_utf8_rejection_is_visible(diagnostics, monkeypatch, capsys):
     def fail(*args, **kwargs):
         raise imaplib.IMAP4.error("BADCHARSET")
 
+    original = imap.open_box
+
     @contextmanager
     def open_box(account):
-        yield SimpleNamespace(folder=SimpleNamespace(list=lambda: []), fetch=fail)
+        with original(account) as box:
+            box.fetch = fail
+            yield box
 
     monkeypatch.setattr(imap, "open_box", open_box)
     assert cli.doctor("alpha") == 1
@@ -169,3 +186,34 @@ def test_real_stdio_handshake_and_tool_discovery(tmp_path):
                     }
 
     asyncio.run(check())
+
+
+@pytest.mark.parametrize(
+    "version, cipher",
+    [
+        ("TLSv1.2", ("ECDHE-RSA-AES128-GCM-SHA256", "TLSv1.2", 128)),
+        (None, None),
+    ],
+)
+def test_doctor_reports_negotiated_socket_values(diagnostics, monkeypatch, capsys, version, cipher):
+    original = imap.open_box
+
+    @contextmanager
+    def open_box(account):
+        with original(account) as box:
+            box.client = SimpleNamespace(
+                sock=SimpleNamespace(
+                    version=lambda: version,
+                    cipher=lambda: cipher,
+                )
+            )
+            yield box
+
+    monkeypatch.setattr(imap, "open_box", open_box)
+    assert cli.doctor("alpha") == 0
+    result = json.loads(capsys.readouterr().out)[0]
+    assert result["tls"] == {
+        "version": version,
+        "cipher": cipher[0] if cipher else None,
+        "secret_bits": cipher[2] if cipher else None,
+    }

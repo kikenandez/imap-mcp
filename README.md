@@ -156,7 +156,9 @@ Both return compact rows:
 ```
 
 **`get_email(account, id, folder?)`** one full message by the `id` from a row, with
-plain-text body preferred over HTML. Reading it does not mark it read.
+plain-text body preferred over HTML. The UID must be a positive ASCII decimal
+number; ranges, lists and wildcards are rejected before connecting. At most one
+message is fetched. Reading it does not mark it read.
 
 Dates are ISO (`YYYY-MM-DD`); `since` filters everywhere; `limit` applies per
 account when merging. If one account is down, its error comes back as a row
@@ -196,9 +198,10 @@ time out after 30 seconds by default; this is not a whole-request deadline.
 List/search fetch only headers, in batches of 50, with a maximum of 100 rows per
 account. Snippets may be empty; use `get_email` for the body. HTML-only messages
 are converted to plain text. Cross-account dates are ordered in UTC.
-Search uses UTF-8, retrying with an ASCII-folded query if the server rejects it;
-this fallback can lose accent distinctions. Queries without an ASCII equivalent
-return an account error rather than an unfiltered search.
+Search uses UTF-8. After a search error, it retries in ASCII only when removing
+accents produces a nonempty, entirely ASCII query. This fallback can lose accent
+distinctions. Empty queries, ASCII-only queries and other Unicode queries
+preserve the original error without retrying.
 
 ### Folders
 
@@ -271,7 +274,10 @@ uv run --locked imap-mcp doctor personal --test-draft
 ```
 
 The command prints JSON containing login status, folders and resolved roles,
-TLS verification policy, socket timeout, and a UTF-8 search for `café`. It fetches
+the actual negotiated TLS version, cipher name and secret bits from the connected
+socket, socket timeout, and a UTF-8 search for `café`. The `tls` field is null
+when connection details are unavailable (including login failures and disabled
+accounts). It fetches
 at most one message's headers and prints no message content. The diagnostic
 search deliberately does not use ASCII fallback, so rejection identifies a
 server limitation even if the normal read tools work with folded queries.

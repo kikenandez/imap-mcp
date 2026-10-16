@@ -22,7 +22,7 @@ def doctor(account_key: str | None = None, *, test_draft: bool = False) -> int:
             "account": account.key,
             "host": account.host,
             "port": account.port,
-            "tls": "certificate and hostname verification required",
+            "tls": None,
             "timeout_seconds": account.timeout_seconds,
             "allow_drafts": account.allow_drafts,
         }
@@ -33,6 +33,13 @@ def doctor(account_key: str | None = None, *, test_draft: bool = False) -> int:
         try:
             with imap.open_box(account) as box:
                 result["login"] = "ok"
+                sock = box.client.sock
+                cipher = sock.cipher()
+                result["tls"] = {
+                    "version": sock.version(),
+                    "cipher": cipher[0] if cipher else None,
+                    "secret_bits": cipher[2] if cipher else None,
+                }
                 result["folders"] = folder_rows(box, account)
                 # Probe actual UTF-8 support without the read tools' ASCII fallback.
                 list(

@@ -142,21 +142,26 @@ def fetch_rows(
         try:
             return fetch(query, "UTF-8")
         except (MailboxUidsError, imaplib.IMAP4.error):
-            folded = unicodedata.normalize("NFKD", query or "").encode("ascii", "ignore").decode()
-            if query and not folded.strip():
-                raise ValueError(
-                    "server rejected UTF-8 search; query has no ASCII equivalent"
-                ) from None
+            folded = "".join(
+                char
+                for char in unicodedata.normalize("NFD", query or "")
+                if not unicodedata.combining(char)
+            )
+            # Retry only if removing accents produces a nonempty ASCII query.
+            # Never hide the original error or drop other Unicode characters.
+            if not query or folded == query or not folded.isascii() or not folded.strip():
+                raise
             return fetch(folded, "US-ASCII")
 
 
 def fetch_one(account: Account, uid: str, folder: str | None = None) -> dict | None:
     """Full message by UID in a folder (default INBOX). Returns None if not found."""
+    if not isinstance(uid, str) or not uid.isascii() or not uid.isdecimal() or int(uid) < 1:
+        raise ValueError("uid must be a positive numeric IMAP UID")
     with open_box(account, folder) as box:
-        msgs = list(box.fetch(AND(uid=uid), mark_seen=False, bulk=False))
-        if not msgs:
+        m = next(box.fetch(AND(uid=uid), mark_seen=False, bulk=False, limit=1), None)
+        if m is None:
             return None
-        m = msgs[0]
         return {
             "account": account.key,
             "id": m.uid,

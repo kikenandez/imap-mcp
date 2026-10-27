@@ -137,8 +137,15 @@ Both return compact rows:
 ```json
 {"account": "personal", "id": "4711", "from": "billing@hetzner.com",
  "subject": "Invoice 2026-07", "date": "2026-07-03T09:12:44+00:00",
- "unread": true, "snippet": "Your invoice for July..."}
+ "unread": true, "snippet": "Your invoice for July...",
+ "has_attachments": true,
+ "attachments": [{"name": "invoice.pdf", "size": 48213, "content_type": "application/pdf"}]}
 ```
+
+`has_attachments` and `attachments` come from the server's BODYSTRUCTURE (one extra
+metadata fetch per 50 rows; no attachment content is downloaded and nothing is marked
+read). `size` is the encoded size in bytes. If the structure can't be read for a message,
+`has_attachments` is `null` and `attachments` is empty: unknown, not "none".
 
 **`get_email(account, id)`** one full message by the `id` from a row, with
 plain-text body preferred over HTML. Reading it does not mark it read.

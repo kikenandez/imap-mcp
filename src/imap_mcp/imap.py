@@ -7,12 +7,14 @@ message never sets the \\Seen flag in the real mailbox.
 from __future__ import annotations
 
 import datetime as dt
+import imaplib
 from collections.abc import Iterator
 from contextlib import contextmanager, suppress
 
 from imap_tools import AND, OR, MailBox
 
 from .accounts import Account
+from .bodystructure import attachments_from_fetch
 
 
 @contextmanager
@@ -52,6 +54,27 @@ def row(msg, account_key: str) -> dict:
     }
 
 
+ATTACHMENT_FETCH_CHUNK = 50
+
+
+def _attachments_by_uid(box, uids: list[str]) -> dict[str, list[dict] | None]:
+    """Attachment names/sizes from BODYSTRUCTURE only: metadata, no part content, no \\Seen.
+
+    A refused or failed lookup leaves those messages' attachments unknown (None, reported as
+    null); it never fails the listing.
+    """
+    found: dict[str, list[dict] | None] = {}
+    for start in range(0, len(uids), ATTACHMENT_FETCH_CHUNK):
+        chunk = ",".join(uids[start : start + ATTACHMENT_FETCH_CHUNK])
+        try:
+            status, data = box.client.uid("FETCH", chunk, "(UID BODYSTRUCTURE)")
+        except imaplib.IMAP4.error:
+            continue
+        if status == "OK":
+            found.update(attachments_from_fetch(data))
+    return found
+
+
 def _criteria(query: str | None, since: dt.date | None, unread_only: bool):
     parts = []
     if query:
@@ -83,7 +106,19 @@ def fetch_rows(
             bulk=True,
             headers_only=False,
         )
-        return [row(m, account.key) for m in msgs]
+        msgs = list(msgs)
+        attachments = _attachments_by_uid(box, [m.uid for m in msgs if m.uid])
+        return [
+            {
+                **row(m, account.key),
+                # None = structure not obtained (null): never read as "no attachments".
+                "has_attachments": None
+                if attachments.get(m.uid) is None
+                else bool(attachments[m.uid]),
+                "attachments": attachments.get(m.uid) or [],
+            }
+            for m in msgs
+        ]
 
 
 def fetch_one(account: Account, uid: str) -> dict | None:

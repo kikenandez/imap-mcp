@@ -11,8 +11,12 @@ class FakeMailBox:
 
     instances = []
     messages = []
+    bodystructures = {}  # uid -> raw BODYSTRUCTURE text, or an Exception to raise
+    bodystructure_status = "OK"
 
     def __init__(self, host, port=993):
+        self.client = SimpleNamespace(uid=self.uid_fetch)
+        self.uid_calls = []
         self.host = host
         self.port = port
         self.login_args = None
@@ -29,6 +33,25 @@ class FakeMailBox:
         self.fetch_kwargs = kwargs
         return iter(FakeMailBox.messages)
 
+    def uid_fetch(self, command, uids, parts):
+        self.uid_calls.append((command, uids, parts))
+        assert command == "FETCH"
+        # Only metadata may be requested: no body part, nothing that could set \\Seen.
+        assert parts == "(UID BODYSTRUCTURE)"
+        return self.bodystructure_fetch(uids)
+
+    def bodystructure_fetch(self, uids):
+        if FakeMailBox.bodystructure_status != "OK":
+            return FakeMailBox.bodystructure_status, [b"fetch refused"]
+        data = []
+        for i, uid in enumerate(uids.split(","), 1):
+            structure = FakeMailBox.bodystructures.get(uid)
+            if isinstance(structure, Exception):
+                raise structure
+            if structure is not None:
+                data.append(f"{i} (UID {uid} BODYSTRUCTURE {structure})".encode())
+        return "OK", data or [None]
+
     def logout(self):
         self.logged_out = True
 
@@ -37,6 +60,8 @@ class FakeMailBox:
 def fake_mailbox(monkeypatch):
     FakeMailBox.instances = []
     FakeMailBox.messages = []
+    FakeMailBox.bodystructures = {}
+    FakeMailBox.bodystructure_status = "OK"
     monkeypatch.setattr(imap, "MailBox", FakeMailBox)
 
 
@@ -173,3 +198,124 @@ def test_fetch_one_not_found(config, monkeypatch):
     monkeypatch.setenv("ALPHA_PW", "pw")
     FakeMailBox.messages = []
     assert imap.fetch_one(accounts.get_account("alpha"), "42") is None
+
+
+PDF_PART = (
+    '("APPLICATION" "PDF" ("NAME" "q3.pdf") NIL NIL "BASE64" 2048 NIL '
+    '("ATTACHMENT" ("FILENAME" "q3.pdf")) NIL NIL)'
+)
+TEXT_PART = '("TEXT" "PLAIN" ("CHARSET" "UTF-8") NIL NIL "7BIT" 12 1 NIL NIL NIL)'
+
+
+def test_rows_report_attachments_from_bodystructure(config, monkeypatch):
+    monkeypatch.setenv("ALPHA_PW", "pw")
+    FakeMailBox.messages = [fake_msg(uid="42"), fake_msg(uid="43"), fake_msg(uid="44")]
+    FakeMailBox.bodystructures = {
+        "42": f'({TEXT_PART} {PDF_PART} "MIXED" NIL NIL NIL)',
+        "43": TEXT_PART,
+        # "44": the server returned nothing for this UID
+    }
+    rows = {r["id"]: r for r in imap.fetch_rows(accounts.get_account("alpha"))}
+    assert rows["42"]["has_attachments"] is True
+    assert rows["42"]["attachments"] == [
+        {"name": "q3.pdf", "size": 2048, "content_type": "application/pdf"}
+    ]
+    assert rows["43"]["has_attachments"] is False and rows["43"]["attachments"] == []
+    # Absent from the reply: unknown (null), never "no attachments".
+    assert rows["44"]["has_attachments"] is None and rows["44"]["attachments"] == []
+
+
+def test_attachment_lookup_is_one_metadata_fetch_and_reads_no_content(config, monkeypatch):
+    monkeypatch.setenv("ALPHA_PW", "pw")
+    FakeMailBox.messages = [fake_msg(uid="42"), fake_msg(uid="43")]
+    imap.fetch_rows(accounts.get_account("alpha"))
+    box = FakeMailBox.instances[-1]
+    assert box.uid_calls == [("FETCH", "42,43", "(UID BODYSTRUCTURE)")]
+    assert box.fetch_kwargs["mark_seen"] is False
+
+
+def test_attachment_lookup_is_chunked(config, monkeypatch):
+    monkeypatch.setenv("ALPHA_PW", "pw")
+    FakeMailBox.messages = [fake_msg(uid=str(n)) for n in range(1, 101)]
+    imap.fetch_rows(accounts.get_account("alpha"), limit=100)
+    calls = FakeMailBox.instances[-1].uid_calls
+    assert [len(c[1].split(",")) for c in calls] == [50, 50]
+
+
+def test_no_messages_means_no_attachment_fetch(config, monkeypatch):
+    monkeypatch.setenv("ALPHA_PW", "pw")
+    assert imap.fetch_rows(accounts.get_account("alpha")) == []
+    assert FakeMailBox.instances[-1].uid_calls == []
+
+
+def test_malformed_bodystructure_does_not_break_the_list(config, monkeypatch):
+    monkeypatch.setenv("ALPHA_PW", "pw")
+    FakeMailBox.messages = [fake_msg(uid="42")]
+    FakeMailBox.bodystructures = {"42": '(("TEXT" "PLAIN"'}
+    row = imap.fetch_rows(accounts.get_account("alpha"))[0]
+    assert row["has_attachments"] is None and row["attachments"] == []
+    assert row["subject"] == "Hello"
+
+
+@pytest.mark.parametrize("failure", [("NO", "refused"), ("BAD", "unsupported")])
+def test_refused_bodystructure_fetch_does_not_break_the_list(config, monkeypatch, failure):
+    monkeypatch.setenv("ALPHA_PW", "pw")
+    FakeMailBox.messages = [fake_msg(uid="42")]
+    FakeMailBox.bodystructure_status = failure[0]
+    row = imap.fetch_rows(accounts.get_account("alpha"))[0]
+    assert row["has_attachments"] is None and row["attachments"] == []
+    assert row["subject"] == "Hello"
+
+
+def test_bodystructure_protocol_error_does_not_break_the_list(config, monkeypatch):
+    import imaplib
+
+    monkeypatch.setenv("ALPHA_PW", "pw")
+    FakeMailBox.messages = [fake_msg(uid="42")]
+    FakeMailBox.bodystructures = {"42": imaplib.IMAP4.error("server hiccup")}
+    row = imap.fetch_rows(accounts.get_account("alpha"))[0]
+    assert row["has_attachments"] is None and row["attachments"] == []
+
+
+def test_failed_chunk_is_unknown_only_for_its_own_uids(config, monkeypatch):
+    monkeypatch.setenv("ALPHA_PW", "pw")
+    FakeMailBox.messages = [fake_msg(uid=str(n)) for n in range(1, 101)]
+    FakeMailBox.bodystructures = {
+        str(n): f'({TEXT_PART} {PDF_PART} "MIXED" NIL NIL NIL)' for n in range(1, 101)
+    }
+    original = FakeMailBox.bodystructure_fetch
+
+    first_uid_of_first_chunk = None
+
+    def record_then_fail(self, uids):
+        nonlocal first_uid_of_first_chunk
+        if first_uid_of_first_chunk is None:
+            first_uid_of_first_chunk = uids
+            return original(self, uids)
+        return "NO", [b"refused"]
+
+    monkeypatch.setattr(FakeMailBox, "bodystructure_fetch", record_then_fail)
+    rows = imap.fetch_rows(accounts.get_account("alpha"), limit=100)
+    first_chunk = set(first_uid_of_first_chunk.split(","))
+    assert len(first_chunk) == 50
+    for r in rows:
+        if r["id"] in first_chunk:
+            assert r["has_attachments"] is True
+        else:
+            assert r["has_attachments"] is None and r["attachments"] == []
+
+
+def test_read_structure_without_attachments_is_false_not_null(config, monkeypatch):
+    monkeypatch.setenv("ALPHA_PW", "pw")
+    FakeMailBox.messages = [fake_msg(uid="42")]
+    FakeMailBox.bodystructures = {"42": TEXT_PART}
+    row = imap.fetch_rows(accounts.get_account("alpha"))[0]
+    assert row["has_attachments"] is False and row["attachments"] == []
+
+
+def test_search_rows_carry_attachments_too(config, monkeypatch):
+    monkeypatch.setenv("ALPHA_PW", "pw")
+    FakeMailBox.messages = [fake_msg(uid="42")]
+    FakeMailBox.bodystructures = {"42": f'({TEXT_PART} {PDF_PART} "MIXED" NIL NIL NIL)'}
+    row = imap.fetch_rows(accounts.get_account("alpha"), query="invoice")[0]
+    assert row["has_attachments"] is True

@@ -171,8 +171,18 @@ Both return compact rows:
 ```json
 {"account": "personal", "folder": "INBOX", "id": "4711", "from": "billing@example.com",
  "subject": "Invoice 2026-07", "date": "2026-07-03T09:12:44+00:00",
- "unread": true, "snippet": ""}
+ "unread": true, "snippet": "", "has_attachments": true,
+ "attachments": [{"name": "invoice.pdf", "size": 48213, "content_type": "application/pdf"}]}
 ```
+
+`has_attachments` and `attachments` come from the IMAP `BODYSTRUCTURE` alone: the server
+describes the message's parts and no part content is downloaded, and nothing is marked
+read. A part counts as an attachment when its disposition is `attachment`, or when it is
+not `text/*` and has a filename (inline pictures without a filename, such as signatures,
+do not count). `size` is the encoded size on the wire, so about a third more than the
+decoded file for base64. `attachments` lists at most 20 entries, names are cut to 200
+characters, RFC 2047/2231 encoded names are decoded, and control characters are removed.
+If the server cannot describe a message, the row says `has_attachments: false`.
 
 **`get_email(account, id, folder?)`** one bounded message by the `id` from a row, with
 plain-text body preferred over HTML. The UID must be a positive ASCII decimal

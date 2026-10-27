@@ -95,6 +95,9 @@ def list_emails(
     unread_only: only unseen messages.
     limit: max rows, capped at 100 per account.
     folder: role or raw folder name; defaults to INBOX.
+
+    Each row has has_attachments and attachments (name, size, content_type; at most 20),
+    read from the message structure without downloading content.
     """
     since_d = _parse_since(since)
     return _rows(account, since=since_d, unread_only=unread_only, limit=limit, folder=folder)
@@ -115,6 +118,9 @@ def search_emails(
     since: ISO date (YYYY-MM-DD) lower bound, optional.
     limit: max rows, capped at 100 per account.
     folder: role or raw folder name; defaults to INBOX.
+
+    Each row has has_attachments and attachments (name, size, content_type; at most 20),
+    read from the message structure without downloading content.
     """
     since_d = _parse_since(since)
     return _rows(account, query=query, since=since_d, limit=limit, folder=folder)

@@ -19,6 +19,7 @@ from imap_tools import AND, OR, MailBox, MailMessage, MailMessageFlags
 from imap_tools.errors import MailboxFetchError, MailboxUidsError
 
 from .accounts import Account
+from .bodystructure import attachments_from_fetch
 from .credentials import MissingCredentialError
 from .drafts import append_uid, build_draft
 from .folders import folder_rows, resolve_folder
@@ -68,6 +69,27 @@ def row(msg, account_key: str) -> dict:
         "unread": "\\Seen" not in msg.flags,
         "snippet": _snippet(msg),
     }
+
+
+ATTACHMENT_FETCH_CHUNK = 50
+
+
+def _attachments_by_uid(box, uids: list[str]) -> dict[str, list[dict]]:
+    """Attachment names/sizes from BODYSTRUCTURE only: metadata, no part content, no \\Seen.
+
+    The mailbox is SELECTed read-only. A refused or failed lookup leaves the rows without
+    attachments; it never fails the listing.
+    """
+    found: dict[str, list[dict]] = {}
+    for start in range(0, len(uids), ATTACHMENT_FETCH_CHUNK):
+        chunk = ",".join(uids[start : start + ATTACHMENT_FETCH_CHUNK])
+        try:
+            status, data = box.client.uid("FETCH", chunk, "(UID BODYSTRUCTURE)")
+        except imaplib.IMAP4.error:
+            continue
+        if status == "OK":
+            found.update(attachments_from_fetch(data))
+    return found
 
 
 def _criteria(query: str | None, since: dt.date | None, unread_only: bool):
@@ -161,13 +183,8 @@ def fetch_rows(
         validity = _uidvalidity(box)
 
         def fetch(text, charset):
-            return [
-                {
-                    **row(m, account.key),
-                    "folder": box.folder.get(),
-                    **message_identity(account, box.folder.get(), validity, m.uid),
-                }
-                for m in box.fetch(
+            messages = list(
+                box.fetch(
                     _criteria(text, since, unread_only),
                     charset=charset,
                     limit=limit,
@@ -176,6 +193,17 @@ def fetch_rows(
                     bulk=50,
                     headers_only=True,
                 )
+            )
+            attachments = _attachments_by_uid(box, [m.uid for m in messages if m.uid])
+            return [
+                {
+                    **row(m, account.key),
+                    "has_attachments": bool(attachments.get(m.uid)),
+                    "attachments": attachments.get(m.uid, []),
+                    "folder": box.folder.get(),
+                    **message_identity(account, box.folder.get(), validity, m.uid),
+                }
+                for m in messages
             ]
 
         try:

@@ -200,9 +200,23 @@ def test_fetch_response_uid_after_bodystructure_and_flags():
         "(" * 5000 + ")" * 5000,
     ],
 )
-def test_malformed_structures_give_no_attachments_and_do_not_raise(bad):
+def test_malformed_structures_are_unknown_not_empty_and_do_not_raise(bad):
     data = [f"1 (UID 5 BODYSTRUCTURE {bad})".encode()]
-    assert attachments_from_fetch(data).get("5", []) == []
+    assert attachments_from_fetch(data) == {"5": None}
+
+
+def test_unparseable_text_before_uid_is_unreadable_and_skipped():
+    assert attachments_from_fetch([b"1 (BODYSTRUCTURE ((("]) == {}
+
+
+def test_response_without_bodystructure_is_unknown():
+    assert attachments_from_fetch([b"1 (UID 5 FLAGS (\\Seen))"]) == {"5": None}
+
+
+def test_summarize_distinguishes_unknown_from_none_found():
+    assert summarize(parse_sexp(PLAIN)) == []
+    assert summarize(None) is None
+    assert summarize(["x"]) is None
 
 
 def test_garbage_items_are_skipped():

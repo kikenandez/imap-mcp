@@ -97,7 +97,8 @@ def list_emails(
     folder: role or raw folder name; defaults to INBOX.
 
     Each row has has_attachments and attachments (name, size, content_type; at most 20),
-    read from the message structure without downloading content.
+    read from the message structure without downloading content. has_attachments is null when
+    the structure could not be obtained (unknown, not 'none').
     """
     since_d = _parse_since(since)
     return _rows(account, since=since_d, unread_only=unread_only, limit=limit, folder=folder)
@@ -120,7 +121,8 @@ def search_emails(
     folder: role or raw folder name; defaults to INBOX.
 
     Each row has has_attachments and attachments (name, size, content_type; at most 20),
-    read from the message structure without downloading content.
+    read from the message structure without downloading content. has_attachments is null when
+    the structure could not be obtained (unknown, not 'none').
     """
     since_d = _parse_since(since)
     return _rows(account, query=query, since=since_d, limit=limit, folder=folder)

@@ -182,7 +182,10 @@ not `text/*` and has a filename (inline pictures without a filename, such as sig
 do not count). `size` is the encoded size on the wire, so about a third more than the
 decoded file for base64. `attachments` lists at most 20 entries, names are cut to 200
 characters, RFC 2047/2231 encoded names are decoded, and control characters are removed.
-If the server cannot describe a message, the row says `has_attachments: false`.
+`has_attachments` is `false` only when the structure was read and has no attachment. When it
+could not be obtained (the lookup was refused or failed, the server left this message out of
+its reply, or the structure was malformed), the row says `has_attachments: null` and
+`attachments: []`: unknown, never "no attachments". The listing itself still succeeds.
 
 **`get_email(account, id, folder?)`** one bounded message by the `id` from a row, with
 plain-text body preferred over HTML. The UID must be a positive ASCII decimal

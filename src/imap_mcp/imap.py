@@ -74,13 +74,13 @@ def row(msg, account_key: str) -> dict:
 ATTACHMENT_FETCH_CHUNK = 50
 
 
-def _attachments_by_uid(box, uids: list[str]) -> dict[str, list[dict]]:
+def _attachments_by_uid(box, uids: list[str]) -> dict[str, list[dict] | None]:
     """Attachment names/sizes from BODYSTRUCTURE only: metadata, no part content, no \\Seen.
 
     The mailbox is SELECTed read-only. A refused or failed lookup leaves the rows without
-    attachments; it never fails the listing.
+    attachments known (None, reported as null); it never fails the listing.
     """
-    found: dict[str, list[dict]] = {}
+    found: dict[str, list[dict] | None] = {}
     for start in range(0, len(uids), ATTACHMENT_FETCH_CHUNK):
         chunk = ",".join(uids[start : start + ATTACHMENT_FETCH_CHUNK])
         try:
@@ -198,8 +198,11 @@ def fetch_rows(
             return [
                 {
                     **row(m, account.key),
-                    "has_attachments": bool(attachments.get(m.uid)),
-                    "attachments": attachments.get(m.uid, []),
+                    # None = structure not obtained (null): never read as "no attachments".
+                    "has_attachments": None
+                    if attachments.get(m.uid) is None
+                    else bool(attachments[m.uid]),
+                    "attachments": attachments.get(m.uid) or [],
                     "folder": box.folder.get(),
                     **message_identity(account, box.folder.get(), validity, m.uid),
                 }

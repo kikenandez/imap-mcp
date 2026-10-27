@@ -114,16 +114,24 @@ def _as_int(value) -> int:
 
 
 def _walk(part, found: list[dict], depth: int) -> None:
-    if len(found) >= MAX_ATTACHMENTS or depth > MAX_DEPTH or not isinstance(part, list) or not part:
+    if len(found) >= MAX_ATTACHMENTS:
         return
+    if depth > MAX_DEPTH or not isinstance(part, list) or not part:
+        raise ValueError("malformed body structure")
     if isinstance(part[0], list):  # multipart: child parts first, then subtype and extensions
         for child in part:
             if not isinstance(child, list):
                 break
             _walk(child, found, depth + 1)
         return
-    if len(part) < 7 or not isinstance(part[0], str) or not isinstance(part[1], str):
-        return
+    if (
+        len(part) < 7
+        or not isinstance(part[0], str)
+        or not isinstance(part[1], str)
+        or not (part[2] is None or isinstance(part[2], list))
+        or not (isinstance(part[6], str) and part[6].isdecimal())
+    ):
+        raise ValueError("malformed body part")
     kind, subtype = part[0].lower(), part[1].lower()
     is_message = kind == "message" and subtype == "rfc822"
     # Extension data follows the basic fields: text adds a line count, message/rfc822 adds
@@ -143,17 +151,18 @@ def _walk(part, found: list[dict], depth: int) -> None:
         _walk(part[8], found, depth + 1)
 
 
-def summarize(structure) -> list[dict]:
+def summarize(structure) -> list[dict] | None:
     """Attachments in a parsed BODYSTRUCTURE: name, encoded size in bytes, content type.
 
     An attachment is a part whose disposition is `attachment`, or a non-text part that has a
     filename. Inline images without a filename (signatures, body pictures) are not attachments.
+    Returns None when the structure is malformed: unknown is not the same as "no attachments".
     """
     found: list[dict] = []
     try:
         _walk(structure, found, 0)
     except (RecursionError, ValueError, TypeError, IndexError):
-        return []
+        return None
     return found[:MAX_ATTACHMENTS]
 
 
@@ -183,12 +192,13 @@ def _responses(data) -> list[str]:
     return responses
 
 
-def attachments_from_fetch(data) -> dict[str, list[dict]]:
+def attachments_from_fetch(data) -> dict[str, list[dict] | None]:
     """Map UID to its attachments from a `UID FETCH (UID BODYSTRUCTURE)` response.
 
-    A response that cannot be parsed maps its UID (when readable) to no attachments.
+    A structure that is missing or cannot be read maps its UID (when readable) to None: unknown.
+    An empty list means the structure was read and has no attachments.
     """
-    result: dict[str, list[dict]] = {}
+    result: dict[str, list[dict] | None] = {}
     for text in _responses(data):
         try:
             items = parse_sexp(text[_RESPONSE_START.match(text).end() - 1 :])
@@ -196,7 +206,7 @@ def attachments_from_fetch(data) -> dict[str, list[dict]]:
             head = text.split("BODYSTRUCTURE", 1)[0]
             uid = _UID.search(head)
             if uid:
-                result[uid[1]] = []
+                result[str(int(uid[1]))] = None
             continue
         uid = structure = None
         for i in range(0, len(items) - 1, 2) if isinstance(items, list) else ():
